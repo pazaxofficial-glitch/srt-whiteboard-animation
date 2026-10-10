@@ -4,6 +4,9 @@ Narration + numbered script + one image per line → hand-drawn whiteboard MP4,
 synced to the voice. Python (OpenCV, NumPy, scikit-image, svgelements),
 FastAPI web UI, FFmpeg for encoding, Whisper for speech timing.
 
+**New session? Read `docs/ROADMAP.md` first**: current status, what is and is
+not verified, known limitations and the agreed next phases.
+
 ## If the user asks you to draw / make the images for a project
 
 Read `docs/svg-style-guide.md` first and follow it exactly. In short: for each
