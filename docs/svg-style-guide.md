@@ -63,8 +63,11 @@ shapes (also in document order). So:
   | tan | `#C9A27E` | wood, skin, earth |
   | cream | `#F3E3B0` | paper, light fills |
 
-- Words: avoid them. If one word is essential (a title like "SPARTA"), write
-  it as stroked block letters made of paths, at most 1–3 words.
+- Words: never put text in the SVG. If a word should appear on the board,
+  mark it in `script.txt` with stars (`Life, the *Spartan* way.`): the app
+  handwrites it next to the picture at the exact moment it is spoken. A line
+  that needs only words and no picture gets no SVG at all; the app writes the
+  whole line.
 - Abstract lines ("success takes time") → use a visual metaphor: a staircase
   with a flag, an hourglass, a seedling growing into a tree.
 

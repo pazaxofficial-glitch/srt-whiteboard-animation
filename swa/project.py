@@ -49,15 +49,40 @@ DEFAULT_SETTINGS: dict = {
     "whisper_model": "small",
     "quality": "high",           # draft | high
     "tail": 0.6,                 # seconds of finished frame after the narration ends
+    # Handwriting
+    "handwriting": True,         # write words marked *like this* when they are spoken
+    "text_lines": "write",       # lines without an image: write | keep (previous drawing stays)
+    "font_latin": "marker",      # marker | casual | neat | bold
+    "font_rtl": "naskh",         # naskh | playful | display | clean
+    "text_color": "auto",        # auto | black | blue | red | green | purple
+    "text_position": "bottom",   # bottom | top (marked words next to the picture)
+    "write_speed": 1.0,
+    # Hand
+    "hand_motion": True,         # natural rotation and flex
+    "hand_shadow": True,
+    "hand_mirror": False,        # left hand
+    # Captions
+    "captions": "off",           # off | clean | box | highlight | pop
+    "caption_position": "bottom",  # bottom | top
+    "caption_size": 1.0,
+    "caption_color": "#FFD43B",  # highlighted word
+    # Audio
+    "sfx": True,                 # marker / chalk sounds while drawing
+    "sfx_volume": 0.5,
+    "music": "none",             # none | builtin:calm | builtin:bright | builtin:focus | file:<name>
+    "music_volume": 0.3,
+    "ducking": 0.7,              # how much the music dips under the voice
+    "normalize_audio": True,     # loudness to `loudness` LUFS
+    "loudness": -14.0,
 }
 
-_D = "[0-9۰-۹٠-٩]+"
+_D = "[0-9\u06f0-\u06f9\u0660-\u0669]+"  # ASCII, Persian and Arabic-Indic digits
 _NUMBERED = re.compile(
     rf"^\s*(?:\[\s*(?P<a>{_D})\s*\]|\(\s*(?P<b>{_D})\s*\)|(?P<c>{_D})\s*[.):\-–—|])\s*(?P<text>.*)$"
 )
 _BARE_NUMBER = re.compile(rf"^\s*(?P<c>{_D})\s+(?P<text>.+)$")
 _TAB_NUMBER = re.compile(rf"^\s*(?P<c>{_D})\t+(?P<text>.*)$")
-_NUMBER_IN_NAME = re.compile(r"[0-9۰-۹٠-٩]+")
+_NUMBER_IN_NAME = re.compile(_D)
 
 
 def _to_int(digits: str) -> int:
@@ -72,7 +97,43 @@ def _match_number(m: re.Match) -> int:
 @dataclass
 class ScriptLine:
     id: int
-    text: str
+    text: str                                        # clean text (no *marks*)
+    marks: list[int] = field(default_factory=list)   # word indices to handwrite when spoken
+
+
+def extract_marks(text: str) -> tuple[str, list[int]]:
+    """'Life, the *Spartan* way' -> ('Life, the Spartan way', [2]).
+
+    Words between asterisks get written on the board at the moment they are
+    spoken. A mark can span several words: '*shield and spear*'.
+    """
+    words: list[str] = []
+    marks: list[int] = []
+    inside = False
+    for tok in text.split():
+        stars_at = [i for i, ch in enumerate(tok) if ch == "*"]
+        clean = tok.replace("*", "")
+        if not stars_at:
+            if clean:
+                if inside:
+                    marks.append(len(words))
+                words.append(clean)
+            continue
+        letters = [i for i, ch in enumerate(tok) if ch.isalnum()]
+        if not letters:                       # a lone "*" toggles the mark
+            inside = not inside
+            continue
+        opens = any(i < letters[0] for i in stars_at)
+        closes = any(i > letters[-1] for i in stars_at)
+        if opens:
+            inside = True
+        if clean:
+            if inside:
+                marks.append(len(words))
+            words.append(clean)
+        if closes:
+            inside = False
+    return " ".join(words), marks
 
 
 def parse_script(text: str) -> list[ScriptLine]:
@@ -108,7 +169,7 @@ def parse_script(text: str) -> list[ScriptLine]:
     if pattern is None:
         for i, ln in enumerate(nonblank, start=1):
             lines.append(ScriptLine(i, ln.strip()))
-        return lines
+        return _with_marks(lines)
 
     for ln in nonblank:
         m = pattern(ln)
@@ -119,6 +180,12 @@ def parse_script(text: str) -> list[ScriptLine]:
         else:
             lines.append(ScriptLine(1, ln.strip()))
     # Drop empty numbered lines but keep their numbers reserved.
+    return _with_marks([ln for ln in lines if ln.text])
+
+
+def _with_marks(lines: list[ScriptLine]) -> list[ScriptLine]:
+    for ln in lines:
+        ln.text, ln.marks = extract_marks(ln.text)
     return [ln for ln in lines if ln.text]
 
 
@@ -302,4 +369,5 @@ class Project:
             "aligned": timeline is not None,
             "timeline_source": timeline.get("source") if timeline else None,
             "renders": [p.name for p in renders],
+            "subtitles": [p.with_suffix(".srt").name for p in renders if p.with_suffix(".srt").exists()],
         }

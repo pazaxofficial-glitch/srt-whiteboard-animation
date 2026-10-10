@@ -1,14 +1,8 @@
-"""Build the whole video: one drawing per script line, in time with the voice.
+"""Build the whole video: every script line drawn (or written) in time with the voice.
 
-Timing model for every line that has an image:
-
-    trans_start ── start ─────────── draw_end ───────── next line
-        │ board changes │ hand draws (ink, then colour) │ finished picture stays
-
-`start` is the moment the first word of the line is spoken, so the pen
-touches the board exactly when the narrator starts that line. With
-sync_mode="speech" the pen moves while words are spoken and slows down in
-pauses.
+    plan shots (schedule.py) -> prepare pictures and handwriting (in background
+    threads) -> for every frame: board + transitions + hand + captions ->
+    FFmpeg -> audio mix (narration, drawing sounds, music) -> MP4 (+ SRT)
 """
 from __future__ import annotations
 
@@ -16,7 +10,7 @@ import math
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
@@ -25,10 +19,17 @@ import numpy as np
 
 from .. import paths
 from ..project import Project
+from . import audio
 from .backgrounds import make_background
-from .drawing import PreparedDrawing, prepare
+from .board import Board
+from .captions import CaptionRenderer, build_chunks, write_srt
+from .drawing import PreparedDrawing, content_area, prepare
 from .encoder import VideoWriter
-from .hands import HandSprite, find_hand
+from .hands import HandRig, find_hand
+from .handwriting import PreparedText, prepare_text
+from .scene import ShotScene
+from .schedule import Shot, plan_shots
+from .text import FontPair
 
 Progress = Callable[[str, float, dict], None]
 
@@ -47,240 +48,68 @@ def frame_size(settings: dict) -> tuple[int, int]:
     return w - w % 2, h - h % 2
 
 
-@dataclass
-class Shot:
-    line_id: int
-    image: Path
-    trans_start: float
-    start: float
-    draw_end: float
-    words: list[dict] = field(default_factory=list)
-
-
-def plan_shots(timeline: dict, images: dict[int, Path], settings: dict, end_time: float) -> list[Shot]:
-    lines = sorted(timeline["lines"], key=lambda ln: ln["start"])
-    fill = float(settings.get("draw_fill", 0.8))
-    min_draw = float(settings.get("min_draw", 0.8))
-    max_draw = float(settings.get("max_draw", 14.0))
-    trans = float(settings.get("transition_duration", 0.6)) if settings.get("transition", "slide") != "cut" else 0.0
-
-    shots: list[Shot] = []
-    for i, ln in enumerate(lines):
-        img = images.get(int(ln["id"]))
-        if img is None:
-            continue
-        start = float(ln["start"])
-        nxt = float(lines[i + 1]["start"]) if i + 1 < len(lines) else end_time
-        avail = max(0.05, nxt - start)
-        draw = min(max(avail * fill, min_draw), max_draw)
-        # Leave room for the next board change.
-        draw = min(draw, max(avail - trans - 0.05, avail * 0.85))
-        draw = max(0.25, min(draw, avail))
-        shots.append(Shot(int(ln["id"]), img, start, start, start + draw, ln.get("words", [])))
-
-    for k, shot in enumerate(shots):
-        if k == 0:
-            shot.trans_start = shot.start
-            continue
-        room = max(0.0, shot.start - shots[k - 1].draw_end)
-        shot.trans_start = shot.start - min(trans, room)
-    return shots
-
-
-def _ease(q: float) -> float:
-    q = min(1.0, max(0.0, q))
-    return q * q * (3 - 2 * q)
-
-
-def progress_curve(shot: Shot, fps: int, mode: str) -> np.ndarray:
-    """Drawing progress (0..1) for each frame between shot.start and shot.draw_end."""
-    n = max(2, int(math.ceil((shot.draw_end - shot.start) * fps)) + 1)
-    t = shot.start + np.arange(n) / fps
-    if mode == "speech" and shot.words:
-        w = np.full(n, 0.3, dtype=np.float64)
-        for wd in shot.words:
-            w[(t >= wd["s"]) & (t < wd["e"] + 0.05)] = 1.0
-        k = max(1, int(0.15 * fps))
-        w = np.convolve(w, np.ones(k) / k, mode="same")
-    else:
-        w = np.ones(n, dtype=np.float64)
-    # Gentle start and finish of the pen.
-    ramp = max(1, min(int(0.12 * fps), n // 2))
-    env = np.ones(n)
-    env[:ramp] = np.linspace(0.35, 1, ramp)
-    env[-ramp:] = np.minimum(env[-ramp:], np.linspace(1, 0.35, ramp))
-    w = w * env
-    c = np.concatenate([[0.0], np.cumsum(w[:-1])])
-    return c / c[-1] if c[-1] > 0 else np.linspace(0, 1, n)
+def script_marks(project: Project) -> dict[int, list[int]]:
+    """Line id -> indices of the words marked *like this* in the script."""
+    return {ln.id: ln.marks for ln in project.lines() if ln.marks}
 
 
 # ──────────────────────────────────────────────────────────────
-# Pen plan: one polyline with pen-up / pen-down segments
+# Layout of one shot
 # ──────────────────────────────────────────────────────────────
 @dataclass
-class PenPlan:
-    pts: np.ndarray      # (P, 2)
-    rad: np.ndarray      # (P,)
-    down: np.ndarray     # (P,) True if the segment ending at P is drawn
-    cum: np.ndarray      # (P,) cumulative effort
-
-    @property
-    def total(self) -> float:
-        return float(self.cum[-1]) if len(self.cum) else 0.0
-
-    def position(self, effort: float) -> tuple[float, float]:
-        if len(self.pts) == 0:
-            return (0.0, 0.0)
-        i = int(np.searchsorted(self.cum, effort, side="right"))
-        if i <= 0:
-            return tuple(self.pts[0])
-        if i >= len(self.pts):
-            return tuple(self.pts[-1])
-        c0, c1 = self.cum[i - 1], self.cum[i]
-        f = 0.0 if c1 <= c0 else (effort - c0) / (c1 - c0)
-        p = self.pts[i - 1] + (self.pts[i] - self.pts[i - 1]) * f
-        return (float(p[0]), float(p[1]))
+class ShotLayout:
+    image_area: tuple[int, int, int, int] | None
+    text_area: tuple[int, int, int, int] | None
+    text_size: float
+    text_lines: int | None
 
 
-def build_plan(polylines: list[tuple[np.ndarray, np.ndarray]], start: tuple[float, float],
-               lift_cost: float = 0.35, lift_pause: float = 10.0) -> PenPlan:
-    pts, rad, down, cost = [np.array(start, np.float32)], [1.0], [False], [0.0]
-    prev = np.array(start, np.float32)
-    for p, r in polylines:
-        if len(p) == 0:
-            continue
-        travel = float(np.linalg.norm(p[0] - prev))
-        pts.append(p[0])
-        rad.append(float(r[0]))
-        down.append(False)
-        cost.append(travel * lift_cost + lift_pause)
-        seg = np.linalg.norm(np.diff(p, axis=0), axis=1)
-        for j in range(1, len(p)):
-            pts.append(p[j])
-            rad.append(float(r[j]))
-            down.append(True)
-            cost.append(float(seg[j - 1]))
-        prev = p[-1]
-    return PenPlan(np.array(pts, np.float32), np.array(rad, np.float32), np.array(down, bool),
-                   np.cumsum(np.array(cost, np.float64)))
-
-
-# ──────────────────────────────────────────────────────────────
-# Revealing one drawing on the board
-# ──────────────────────────────────────────────────────────────
-class DrawState:
-    def __init__(self, d: PreparedDrawing, board: np.ndarray, bg: np.ndarray, mode: str, ink_share: float,
-                 start: tuple[float, float]):
-        self.d = d
-        self.board = board
-        self.bg = bg
-        self.mode = mode
-        w, h = d.size
-        self.mline = np.zeros((h, w), np.uint8)
-        self.mcol = np.zeros((h, w), np.uint8)
-        self.ink_share = 1.0 if mode == "ink_only" else (ink_share if d.color_paths else 1.0)
-        if not d.strokes and d.color_paths and mode != "ink_only":
-            self.ink_share = 0.0  # fill-only picture: go straight to colouring
-        self.ink = build_plan([(s.points, s.radius) for s in d.strokes], start)
-        ink_end = tuple(self.ink.pts[-1]) if len(self.ink.pts) else start
-        self.col = build_plan([(p, np.full(len(p), r, np.float32)) for p, r in d.color_paths], ink_end,
-                              lift_cost=0.25, lift_pause=4.0)
-        self.ink_i = 1
-        self.col_i = 1
-        self.ink_effort = 0.0
-        self.col_effort = 0.0
-        self.done = False
-
-    def _draw_segments(self, plan: PenPlan, idx: int, effort: float, mask: np.ndarray, extra: np.ndarray | None,
-                       scale: float = 1.0) -> tuple[int, list[float] | None]:
-        """Draw pen-down segments up to `effort`. Returns (next index, dirty box)."""
-        ox, oy = self.d.rect[0], self.d.rect[1]
-        box = None
-        n = len(plan.pts)
-
-        def stamp(a, b, r):
-            nonlocal box
-            t = max(1, int(round(2 * r * scale)))
-            pa = (int(round(a[0] - ox)), int(round(a[1] - oy)))
-            pb = (int(round(b[0] - ox)), int(round(b[1] - oy)))
-            cv2.line(mask, pa, pb, 255, t, cv2.LINE_AA)
-            if extra is not None:
-                cv2.line(extra, pa, pb, 255, max(1, int(t * 1.5)), cv2.LINE_AA)
-            rr = r * scale * 1.5 + 2
-            x0, x1 = min(pa[0], pb[0]) - rr, max(pa[0], pb[0]) + rr
-            y0, y1 = min(pa[1], pb[1]) - rr, max(pa[1], pb[1]) + rr
-            box = [x0, y0, x1, y1] if box is None else [min(box[0], x0), min(box[1], y0),
-                                                          max(box[2], x1), max(box[3], y1)]
-
-        while idx < n and plan.cum[idx] <= effort:
-            if plan.down[idx]:
-                stamp(plan.pts[idx - 1], plan.pts[idx], (plan.rad[idx - 1] + plan.rad[idx]) / 2)
-            idx += 1
-        # Partial segment up to the exact pen position.
-        if idx < n and plan.down[idx] and plan.cum[idx] > plan.cum[idx - 1]:
-            c0, c1 = plan.cum[idx - 1], plan.cum[idx]
-            f = (effort - c0) / (c1 - c0)
-            if f > 0:
-                a = plan.pts[idx - 1]
-                b = a + (plan.pts[idx] - a) * f
-                stamp(a, b, plan.rad[idx])
-        return idx, box
-
-    def compose(self, box: list[float] | None = None) -> None:
-        d = self.d
-        w, h = d.size
-        if box is None:
-            x0, y0, x1, y1 = 0, 0, w, h
+def shot_layout(shot: Shot, W: int, H: int, settings: dict, caption_band: tuple[int, int] | None) -> ShotLayout:
+    x0, y0, x1, y1 = content_area(W, H, settings)
+    if caption_band is not None:
+        b0, b1 = caption_band
+        if b0 <= 0:
+            y0 = max(y0, b1)
         else:
-            x0, y0 = max(0, int(box[0])), max(0, int(box[1]))
-            x1, y1 = min(w, int(math.ceil(box[2])) + 1), min(h, int(math.ceil(box[3])) + 1)
-            if x0 >= x1 or y0 >= y1:
-                return
-        fx, fy = d.rect[0], d.rect[1]
-        base = self.bg[fy + y0:fy + y1, fx + x0:fx + x1].astype(np.float32)
-        ml = (self.mline[y0:y1, x0:x1].astype(np.float32) * (1 / 255)) * d.line_a[y0:y1, x0:x1]
-        mc = (self.mcol[y0:y1, x0:x1].astype(np.float32) * (1 / 255)) * d.full_a[y0:y1, x0:x1]
-        out = base + (d.line_rgb[y0:y1, x0:x1] - base) * ml[..., None]
-        out += (d.full_rgb[y0:y1, x0:x1] - out) * mc[..., None]
-        self.board[fy + y0:fy + y1, fx + x0:fx + x1] = np.clip(out, 0, 255).astype(np.uint8)
+            y1 = min(y1, b0)
+    base = min(W, H)
+    if shot.kind == "text":
+        px, py = int((x1 - x0) * 0.04), int((y1 - y0) * 0.06)
+        return ShotLayout(None, (x0 + px, y0 + py, x1 - px, y1 - py), base * 0.13, None)
+    if not shot.writes:
+        return ShotLayout((x0, y0, x1, y1), None, 0, None)
+    band = max(int(H * 0.12), int((y1 - y0) * 0.2))
+    gap = int(H * 0.015)
+    if settings.get("text_position", "bottom") == "top":
+        text = (x0, y0, x1, y0 + band)
+        image = (x0, y0 + band + gap, x1, y1)
+    else:
+        text = (x0, y1 - band, x1, y1)
+        image = (x0, y0, x1, y1 - band - gap)
+    return ShotLayout(image, text, band * 0.78, 2)
 
-    def advance(self, p: float) -> tuple[float, float]:
-        """Draw up to progress p (0..1). Returns the pen position."""
-        ink_p = min(1.0, p / self.ink_share) if self.ink_share > 0 else 1.0
-        col_p = 0.0 if self.ink_share >= 1.0 else max(0.0, (p - self.ink_share) / (1 - self.ink_share))
 
-        extra = self.mcol if self.mode == "color_strokes" else None
-        effort = ink_p * self.ink.total
-        self.ink_i, box = self._draw_segments(self.ink, self.ink_i, effort, self.mline, extra)
-        if box:
-            self.compose(box)
-        pos = self.ink.position(effort)
-        if col_p > 0 and self.col.total > 0:
-            effort = col_p * self.col.total
-            self.col_i, box = self._draw_segments(self.col, self.col_i, effort, self.mcol, None, scale=1.0)
-            if box:
-                self.compose(box)
-            pos = self.col.position(effort)
-        return pos
-
-    def finish(self) -> None:
-        if self.done:
-            return
-        self.mline[:] = 255
-        if self.mode != "ink_only":
-            self.mcol[:] = 255
-        self.compose(None)
-        self.done = True
-
-    @property
-    def last_pos(self) -> tuple[float, float]:
-        plan = self.col if (self.col.total > 0 and self.ink_share < 1.0) else self.ink
-        return tuple(plan.pts[-1]) if len(plan.pts) else (0.0, 0.0)
+def prepare_shot(shot: Shot, W: int, H: int, settings: dict, dark: bool, language: str,
+                 caption_band: tuple[int, int] | None) -> tuple[PreparedDrawing | None, PreparedText | None]:
+    lay = shot_layout(shot, W, H, settings, caption_band)
+    drawing = prepare(shot.image, lay.image_area, settings, dark, language) if shot.image is not None else None
+    text = None
+    if lay.text_area is not None and shot.write_words:
+        words = [shot.words[i]["w"] for i in shot.write_words if i < len(shot.words)]
+        fonts = FontPair.get(settings.get("font_latin", "marker"), settings.get("font_rtl", "naskh"))
+        text = prepare_text(words, fonts, lay.text_area, settings.get("text_color", "auto"), dark,
+                            lay.text_size, max_lines=lay.text_lines)
+    return drawing, text
 
 
 # ──────────────────────────────────────────────────────────────
 # Transitions
 # ──────────────────────────────────────────────────────────────
+def _ease(q: float) -> float:
+    q = min(1.0, max(0.0, q))
+    return q * q * (3 - 2 * q)
+
+
 def transition_frame(kind: str, prev: np.ndarray, new: np.ndarray, q: float, rtl: bool) -> np.ndarray:
     q = _ease(q)
     h, w = prev.shape[:2]
@@ -306,6 +135,16 @@ def transition_frame(kind: str, prev: np.ndarray, new: np.ndarray, q: float, rtl
     return new if q >= 1 else prev
 
 
+def _curve_path(a, b, q: float, bend: float = 0.25) -> tuple[float, float]:
+    """Point on a gentle arc from a to b (the hand swings in rather than sliding)."""
+    q = min(1.0, max(0.0, q))
+    cx = a[0] + (b[0] - a[0]) * 0.5 + (b[1] - a[1]) * bend
+    cy = a[1] + (b[1] - a[1]) * 0.5 - abs(b[0] - a[0]) * bend * 0.5
+    x = (1 - q) ** 2 * a[0] + 2 * (1 - q) * q * cx + q * q * b[0]
+    y = (1 - q) ** 2 * a[1] + 2 * (1 - q) * q * cy + q * q * b[1]
+    return (x, y)
+
+
 # ──────────────────────────────────────────────────────────────
 # Main renderer
 # ──────────────────────────────────────────────────────────────
@@ -324,7 +163,7 @@ def render_project(project: Project, out_path: Path | None = None, progress: Pro
         raise ValueError("Sync the narration first (no timeline yet).")
     narration = project.narration_path()
     images, _ = project.images()
-    if not images:
+    if not images and settings.get("text_lines", "write") != "write":
         raise ValueError("No images found. Upload images named 1.png, 2.png, ...")
 
     fps = int(settings.get("fps", 30))
@@ -343,10 +182,17 @@ def render_project(project: Project, out_path: Path | None = None, progress: Pro
     if settings.get("hand", "marker") != "none":
         hdir = find_hand(settings.get("hand", "marker")) or find_hand("marker")
         if hdir is not None:
-            hand = HandSprite(hdir, min(W, H), float(settings.get("hand_scale", 1.0)), H)
-    offscreen = (W * 0.82, H * 1.12)
+            hand = HandRig(hdir, W, H, float(settings.get("hand_scale", 1.0)),
+                           mirror=bool(settings.get("hand_mirror", False)),
+                           motion=bool(settings.get("hand_motion", True)),
+                           shadow=bool(settings.get("hand_shadow", True)))
+    offscreen = hand.offscreen if hand else (W * 0.82, H * 1.12)
+    captions = CaptionRenderer(timeline, W, H, settings)
+    cap_band = captions.band() if captions.enabled else None
 
-    shots = plan_shots(timeline, images, settings, end_time)
+    shots = plan_shots(timeline, images, settings, end_time, script_marks(project))
+    if not shots:
+        raise ValueError("Nothing to draw: no line has an image (and writing lines as text is off).")
     t_to = end_time if t_to is None else min(t_to, end_time)
     f_from = int(t_from * fps)
     f_to = int(math.ceil(t_to * fps))
@@ -355,30 +201,31 @@ def render_project(project: Project, out_path: Path | None = None, progress: Pro
     for k, s in enumerate(shots):
         if s.trans_start <= t_from:
             first = max(0, k - 1)
-    f_sim = min(f_from, int(shots[first].trans_start * fps)) if shots else f_from
+    f_sim = min(f_from, int(shots[first].trans_start * fps))
 
     if out_path is None:
         project.output_dir.mkdir(parents=True, exist_ok=True)
         stamp = time.strftime("%Y%m%d-%H%M%S")
         out_path = project.output_dir / f"{project.slug}-{stamp}.mp4"
-    writer = VideoWriter(out_path, W, H, fps, narration, settings.get("quality", "high"),
-                         audio_start=t_from, audio_duration=(t_to - t_from) if (t_from > 0 or t_to < end_time) else None)
+    video_tmp = out_path.with_name(out_path.stem + ".video.mp4")
+    writer = VideoWriter(video_tmp, W, H, fps, None, settings.get("quality", "high"))
+    log = audio.ActivityLog(fps, f_from, f_to, math.hypot(W, H))
 
     pool = ThreadPoolExecutor(max_workers=2)
     futures: dict[int, object] = {}
 
     def want(k: int):
         if 0 <= k < len(shots) and k not in futures:
-            futures[k] = pool.submit(prepare, shots[k].image, W, H, settings, dark, language)
+            futures[k] = pool.submit(prepare_shot, shots[k], W, H, settings, dark, language, cap_band)
 
-    board = bg.copy()
-    prev_board: np.ndarray | None = None
-    state: DrawState | None = None
+    board = Board(bg)
+    prev_img: np.ndarray | None = None
+    scene: ShotScene | None = None
     cur = -1
     nxt = first
-    curves: dict[int, np.ndarray] = {}
     t0 = time.time()
     total = max(1, f_to - f_from)
+    dt = 1.0 / fps
     try:
         for k in range(first, min(first + 2, len(shots))):
             want(k)
@@ -387,56 +234,65 @@ def render_project(project: Project, out_path: Path | None = None, progress: Pro
                 raise Cancelled()
             t = f / fps
             while nxt < len(shots) and t >= shots[nxt].trans_start:
-                if state is not None:
-                    state.finish()
-                prev_board = board.copy() if cur >= 0 else bg.copy()
-                board = bg.copy()
+                if scene is not None:
+                    scene.finish()
+                prev_img = board.img.copy() if cur >= 0 else bg.copy()
+                board = Board(bg)
                 cur = nxt
                 nxt += 1
                 want(cur)
                 want(cur + 1)
                 try:
-                    drawing = futures.pop(cur).result()
+                    drawing, text = futures.pop(cur).result()
                 except Exception as exc:  # unreadable image: keep going without it
                     if progress:
-                        progress(f"Skipping image for line {shots[cur].line_id}: {exc}", (f - f_from) / total, {})
-                    drawing = None
-                state = None
-                if drawing is not None:
-                    first_pt = (tuple(drawing.strokes[0].points[0]) if drawing.strokes else
-                                (drawing.rect[0], drawing.rect[1]))
-                    state = DrawState(drawing, board, bg, mode, ink_share, first_pt)
-                curves[cur] = progress_curve(shots[cur], fps, sync_mode)
-                for old in [k for k in curves if k < cur - 1]:
-                    curves.pop(old)
+                        progress(f"Skipping line {shots[cur].line_id}: {exc}", max(0.0, (f - f_from) / total), {})
+                    drawing, text = None, None
+                scene = ShotScene(shots[cur], board, drawing, text, mode, ink_share, fps, sync_mode)
+                if cur > 0 and trans_kind != "cut" and shots[cur].start > shots[cur].trans_start:
+                    log.event(shots[cur].trans_start, "whoosh" if trans_kind in ("slide", "fade") else "erase",
+                              shots[cur].start - shots[cur].trans_start)
 
-            hand_pos = None
+            hand_state = None
             if cur < 0:
-                frame = board
+                frame = board.img
             else:
                 shot = shots[cur]
-                if t < shot.start and prev_board is not None and trans_kind != "cut":
-                    q = (t - shot.trans_start) / max(1e-6, shot.start - shot.trans_start)
-                    frame = transition_frame(trans_kind, prev_board, board, q, rtl)
-                elif t < shot.start and prev_board is not None:
-                    frame = prev_board
+                if t < shot.start:
+                    if prev_img is not None and trans_kind != "cut" and shot.start > shot.trans_start:
+                        q = (t - shot.trans_start) / max(1e-6, shot.start - shot.trans_start)
+                        frame = transition_frame(trans_kind, prev_img, board.img, q, rtl)
+                    else:
+                        frame = prev_img if prev_img is not None else board.img
+                    target = scene.entry_target() if scene is not None else None
+                    if target is not None and shot.start - t < 0.4:
+                        q = 1 - (1 - (1 - (shot.start - t) / 0.4)) ** 2
+                        hand_state = ("move", _curve_path(offscreen, target, q), False)
                 else:
-                    frame = board
-                    if state is not None and not state.done:
-                        if t <= shot.draw_end:
-                            curve = curves[cur]
-                            i = min(len(curve) - 1, int(round((t - shot.start) * fps)))
-                            hand_pos = state.advance(float(curve[i]))
-                        else:
-                            state.advance(1.0)
-                            state.finish()
-                hand_pos = _hand_position(t, shots, cur, nxt, state, hand_pos, offscreen)
+                    frame = board.img
+                    if scene is not None and not scene.done:
+                        st = scene.update(min(t, shot.draw_end))
+                        if t > shot.draw_end:
+                            scene.finish()
+                        elif st is not None:
+                            hand_state = (st.kind, st.pos, st.down)
+                    if hand_state is None and scene is not None and scene.last_pos is not None and t > shot.draw_end:
+                        next_start = shots[nxt].start if nxt < len(shots) else shot.draw_end + 10
+                        exit_d = min(0.6, max(0.15, (next_start - shot.draw_end) * 0.4))
+                        q = (t - shot.draw_end) / exit_d
+                        if q < 1:
+                            hand_state = ("move", _curve_path(scene.last_pos, offscreen, q * q, -0.2), False)
 
+            if hand_state is None and hand is not None:
+                hand.reset()
+            log.record(f, hand_state)
             if f < f_from:
                 continue
-            if hand is not None and hand_pos is not None:
+            if (hand is not None and hand_state is not None) or captions.enabled:
                 out = frame.copy()
-                hand.paste(out, hand_pos[0], hand_pos[1])
+                if hand is not None and hand_state is not None:
+                    hand.draw(out, hand_state[1][0], hand_state[1][1], t, hand_state[2], dt)
+                captions.draw(out, t)
                 writer.write(out)
             else:
                 writer.write(frame)
@@ -444,69 +300,71 @@ def render_project(project: Project, out_path: Path | None = None, progress: Pro
             if progress and (done % max(1, fps // 2) == 0 or done == total):
                 el = time.time() - t0
                 eta = el / done * (total - done)
-                progress("Rendering", done / total, {"frame": done, "frames": total, "eta": round(eta, 1),
-                                                     "line": shots[cur].line_id if cur >= 0 else None})
+                progress("Rendering", done / total * 0.97, {"frame": done, "frames": total, "eta": round(eta, 1),
+                                                            "line": shots[cur].line_id if cur >= 0 else None})
         writer.close()
     except BaseException:
         writer.abort()
         raise
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
+
+    try:
+        if progress:
+            progress("Mixing audio", 0.98, {})
+        audio.finalize(video_tmp, out_path, narration, log, settings, dark, t_from, t_to, cancel)
+    finally:
+        if video_tmp.exists():
+            video_tmp.unlink()
+    if t_from <= 0 and t_to >= end_time - 1e-6:
+        write_srt(build_chunks(timeline), out_path.with_suffix(".srt"))
     return out_path
 
 
 def still_frame(project: Project, line_id: int | None = None, overrides: dict | None = None,
                 max_width: int = 960) -> np.ndarray:
-    """A finished drawing on the chosen board with the hand: quick style preview."""
+    """The finished board for one line, with hand and captions: quick style preview."""
     settings = dict(project.settings)
     if overrides:
         settings.update(overrides)
     W, H = frame_size(settings)
     bg, dark = make_background(settings.get("background", "whiteboard"), W, H, paths.USER_BACKGROUNDS)
-    board = bg.copy()
     images, _ = project.images()
-    if images:
-        if line_id is None or line_id not in images:
-            line_id = min(images)
-        d = prepare(images[line_id], W, H, settings, dark, project.language())
-        state = DrawState(d, board, bg, settings.get("color_mode", "ink_then_color"), 0.7,
-                          (d.rect[0], d.rect[1]))
-        state.finish()
-        pos = tuple(d.strokes[len(d.strokes) * 2 // 3].points[-1]) if d.strokes else (W * 0.6, H * 0.6)
-    else:
-        pos = (W * 0.6, H * 0.6)
+    timeline = project.load_timeline()
+    marks = script_marks(project)
+    shot = None
+    if timeline is not None:
+        shots = plan_shots(timeline, images, settings, float(timeline.get("duration") or 60) + 1, marks)
+        pick = [s for s in shots if line_id is None or s.line_id == line_id]
+        shot = pick[0] if pick else (shots[0] if shots else None)
+    if shot is None and images:
+        lid = line_id if line_id in images else min(images)
+        shot = Shot(lid, images[lid], 0.0, 0.0, 1.0, 1.0)
+    captions = CaptionRenderer(timeline, W, H, settings) if timeline is not None else None
+    cap_band = captions.band() if captions is not None and captions.enabled else None
+    board = Board(bg)
+    pos = (W * 0.6, H * 0.6)
+    if shot is not None:
+        drawing, text = prepare_shot(shot, W, H, settings, dark, project.language(), cap_band)
+        scene = ShotScene(shot, board, drawing, text, settings.get("color_mode", "ink_then_color"), 0.7, 30, "linear")
+        scene.finish()
+        strokes = (text.strokes if text is not None and text.strokes else
+                   drawing.strokes if drawing is not None else [])
+        if strokes:
+            pos = tuple(strokes[len(strokes) * 2 // 3].points[-1])
+    img = board.img.copy()
     if settings.get("hand", "marker") != "none":
-        hdir = find_hand(settings.get("hand", "marker"))
+        hdir = find_hand(settings.get("hand", "marker")) or find_hand("marker")
         if hdir is not None:
-            HandSprite(hdir, min(W, H), float(settings.get("hand_scale", 1.0)), H).paste(board, pos[0], pos[1])
+            rig = HandRig(hdir, W, H, float(settings.get("hand_scale", 1.0)),
+                          mirror=bool(settings.get("hand_mirror", False)),
+                          motion=bool(settings.get("hand_motion", True)),
+                          shadow=bool(settings.get("hand_shadow", True)))
+            rig.draw(img, pos[0], pos[1], 0.0, True, 0.0)
+    if captions is not None and captions.enabled and shot is not None:
+        c = next((c for c in captions.chunks if c.line_id == shot.line_id), None)
+        if c is not None:
+            captions.draw(img, c.times[min(1, len(c.times) - 1)][0] + 0.01)
     if W > max_width:
-        board = cv2.resize(board, (max_width, int(H * max_width / W)), interpolation=cv2.INTER_AREA)
-    return board
-
-
-def _hand_position(t: float, shots: list[Shot], cur: int, nxt: int, state: DrawState | None,
-                   drawing_pos, offscreen) -> tuple[float, float] | None:
-    """Where the hand is: drawing, walking in before a line, or leaving after it."""
-    if drawing_pos is not None:
-        return drawing_pos
-    shot = shots[cur]
-    entry = 0.4
-    # Walking in just before the line starts.
-    if state is not None and not state.done and t < shot.start:
-        first = state.ink.pts[1] if len(state.ink.pts) > 1 else state.ink.pts[0]
-        q = 1 - (shot.start - t) / entry
-        if q <= 0:
-            return None
-        q = 1 - (1 - q) ** 2
-        return (offscreen[0] + (first[0] - offscreen[0]) * q, offscreen[1] + (first[1] - offscreen[1]) * q)
-    # Leaving after the drawing is finished.
-    if state is not None and t > shot.draw_end:
-        next_start = shots[nxt].start if nxt < len(shots) else shot.draw_end + 10
-        exit_d = min(0.6, max(0.15, (next_start - shot.draw_end) * 0.4))
-        q = (t - shot.draw_end) / exit_d
-        if q >= 1:
-            return None
-        q = q * q
-        last = state.last_pos
-        return (last[0] + (offscreen[0] - last[0]) * q, last[1] + (offscreen[1] - last[1]) * q)
-    return None
+        img = cv2.resize(img, (max_width, int(H * max_width / W)), interpolation=cv2.INTER_AREA)
+    return img

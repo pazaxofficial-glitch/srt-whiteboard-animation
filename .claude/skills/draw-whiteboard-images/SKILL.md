@@ -7,7 +7,7 @@ description: Draw the SVG images for a Simple Whiteboard Animation project, one 
 
 1. Find the project: `data/projects/<name>/` (ask which one if there are several and the user did not say). Read `script.txt` and `project.json` (`settings.aspect` decides 1600×900 or 900×1600).
 2. Read `docs/svg-style-guide.md` and follow every rule in it.
-3. List which lines have no image yet (`python -m swa check <project>` shows `missing_images`). Draw only those unless asked to redo.
+3. List which lines have no image yet (`python -m swa check <project>` shows `missing_images`). Draw only those unless asked to redo. Skip lines that are pure text (titles, quotes, numbers): the app writes those lines by hand on its own. If a key word should appear on the board, suggest marking it in `script.txt` as `*word*` instead of drawing text.
 4. Work in batches of 10–20 lines. For each line N write `images/N.svg`.
 5. After each batch:
    - `python -m swa lint-svg <project>` — fix every problem it lists.

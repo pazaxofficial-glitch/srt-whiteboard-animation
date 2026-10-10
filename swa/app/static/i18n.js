@@ -185,6 +185,89 @@ const I18N = {
     "e.deleteConfirm": "Delete this video file?",
     "e.videos": "Your renders",
 
+    "tab.audio": "Audio",
+    "c.marksHint": "Tip: put *stars* around words to have the hand write them on the board the moment they are spoken, e.g. 1. Life, the *Spartan* way.",
+    "i.asText": "Written as text",
+    "i.textCount": "lines have no image and will be written as text",
+    "e.srt": "Subtitles (SRT)",
+    "s.handMotion": "Natural motion",
+    "s.handMotionHint": "The arm swings and flexes while drawing",
+    "s.handShadow": "Soft shadow",
+    "s.handMirror": "Left hand",
+    "s.handMirrorHint": "Mirror the hand",
+    "s.writing": "Handwriting",
+    "s.handwriting": "Write *marked* words",
+    "s.handwritingHint": "Words between stars in the script are written when spoken",
+    "s.textLines": "Lines without an image",
+    "s.textLinesHint": "Write the line on the board, or keep the previous drawing",
+    "s.writeText": "Write the line",
+    "s.keepDrawing": "Keep previous drawing",
+    "s.fontLatin": "English font",
+    "s.fontRtl": "Persian font",
+    "s.textColor": "Ink colour",
+    "s.textPosition": "Written words go",
+    "s.textPositionHint": "Next to the picture",
+    "s.bottom": "Bottom",
+    "s.top": "Top",
+    "s.writeSpeed": "Writing speed",
+    "font.marker": "Marker",
+    "font.casual": "Casual",
+    "font.neat": "Neat",
+    "font.bold": "Bold caps",
+    "font.naskh": "Naskh",
+    "font.playful": "Playful",
+    "font.display": "Display",
+    "font.clean": "Clean",
+    "color.auto": "Auto",
+    "color.black": "Black",
+    "color.blue": "Blue",
+    "color.red": "Red",
+    "color.green": "Green",
+    "color.purple": "Purple",
+    "s.captions": "Captions",
+    "s.captionStyle": "Style",
+    "s.captionsHint": "Burned into the video. An SRT file is always saved too",
+    "s.off": "Off",
+    "s.capClean": "Clean",
+    "s.capBox": "Box",
+    "s.capHighlight": "Highlight word",
+    "s.capPop": "Pop (Shorts)",
+    "s.capPosition": "Position",
+    "s.capSize": "Size",
+    "s.capColor": "Highlight colour",
+    "s.capColorHint": "Colour of the word being spoken",
+    "a.sfx": "Drawing sounds",
+    "a.sfxHint": "Marker on the whiteboard (chalk on dark boards), only while the pen is touching the board. Made by the app, no copyright issues.",
+    "a.sfxOn": "Drawing sounds",
+    "a.sfxVolume": "Volume",
+    "a.relative": "Relative to your voice, whatever your microphone level",
+    "a.sample": "Listen",
+    "a.marker": "Marker",
+    "a.chalk": "Chalk",
+    "a.music": "Background music",
+    "a.musicHint": "Built-in tracks are composed by the app (free to use). Or add your own.",
+    "a.noMusic": "No music",
+    "a.voiceOnly": "Voice and drawing sounds only",
+    "a.yourTrack": "Your track",
+    "a.listen": "Listen",
+    "a.preparing": "Preparing the track (first time takes a few seconds)…",
+    "a.deleteConfirm": "Delete this track?",
+    "a.drop": "Drop your music here",
+    "a.musicVolume": "Music volume",
+    "a.ducking": "Duck under voice",
+    "a.duckingHint": "How much the music dips while you speak",
+    "a.loudness": "Loudness",
+    "a.loudnessHint": "Makes the whole video as loud as platforms expect, without distortion.",
+    "a.normalize": "Normalize loudness",
+    "a.target": "Target",
+    "a.player": "Player",
+    "music.calm": "Calm",
+    "music.calm.hint": "Soft kalimba and pads, 72 BPM",
+    "music.bright": "Bright",
+    "music.bright.hint": "Upbeat marimba and light drums, 100 BPM",
+    "music.focus": "Focus",
+    "music.focus.hint": "Lo-fi electric piano, 84 BPM",
+
     "help.html": `
       <h1>Guide</h1>
       <h2>Make a video in 5 steps</h2>
@@ -196,6 +279,17 @@ const I18N = {
         <li><b>Export</b> — render the MP4 with your narration.</li>
       </ol>
       <p>Or press <b>Make video</b> to sync and render in one click.</p>
+      <h2>Write words on the board</h2>
+      <ul>
+        <li>Put stars around a word in the script: <code>1. Life, the *Spartan* way.</code> The hand writes “Spartan” on the board exactly when it is spoken (the picture pauses for a moment).</li>
+        <li>Several words: <code>*shield and spear*</code>.</li>
+        <li>A line with no image is written out word by word as the narrator says it, which works well for titles, quotes and numbers.</li>
+      </ul>
+      <h2>Captions and sound</h2>
+      <ul>
+        <li><b>Style → Captions</b>: clean, box, highlighted word or Shorts-style pop. An SRT subtitle file is saved next to every video.</li>
+        <li><b>Audio</b>: marker/chalk sounds that follow the pen, built-in background music that dips under your voice, and loudness set to the YouTube standard (−14 LUFS).</li>
+      </ul>
       <h2>Best images</h2>
       <ul>
         <li>Clean line art on a plain white background draws most naturally.</li>
@@ -395,6 +489,89 @@ python -m swa render "my-video"</pre>
     "e.deleteConfirm": "این فایل ویدیو حذف شود؟",
     "e.videos": "ویدیوهای ساخته‌شده",
 
+    "tab.audio": "صدا",
+    "c.marksHint": "نکته: دور کلمه‌ها *ستاره* بگذارید تا دست همان لحظه‌ای که گفته می‌شوند آن‌ها را روی تخته بنویسد، مثلاً: 1. زندگی به سبک *اسپارتی*.",
+    "i.asText": "به‌صورت متن نوشته می‌شود",
+    "i.textCount": "خط تصویر ندارند و به‌صورت متن نوشته می‌شوند",
+    "e.srt": "زیرنویس (SRT)",
+    "s.handMotion": "حرکت طبیعی",
+    "s.handMotionHint": "بازو هنگام کشیدن می‌چرخد و کمی تکان می‌خورد",
+    "s.handShadow": "سایه‌ی نرم",
+    "s.handMirror": "دست چپ",
+    "s.handMirrorHint": "قرینه کردن دست",
+    "s.writing": "دست‌نویس",
+    "s.handwriting": "نوشتن کلمه‌های *علامت‌دار*",
+    "s.handwritingHint": "کلمه‌های بین ستاره‌ها در اسکریپت، همان لحظه‌ی گفته‌شدن نوشته می‌شوند",
+    "s.textLines": "خط‌های بدون تصویر",
+    "s.textLinesHint": "خط روی تخته نوشته شود یا طراحی قبلی بماند",
+    "s.writeText": "نوشتن خط",
+    "s.keepDrawing": "ماندن طراحی قبلی",
+    "s.fontLatin": "فونت انگلیسی",
+    "s.fontRtl": "فونت فارسی",
+    "s.textColor": "رنگ جوهر",
+    "s.textPosition": "جای کلمه‌های نوشته‌شده",
+    "s.textPositionHint": "کنار تصویر",
+    "s.bottom": "پایین",
+    "s.top": "بالا",
+    "s.writeSpeed": "سرعت نوشتن",
+    "font.marker": "ماژیکی",
+    "font.casual": "خودمانی",
+    "font.neat": "مرتب",
+    "font.bold": "درشت",
+    "font.naskh": "نسخ",
+    "font.playful": "شاد",
+    "font.display": "نمایشی",
+    "font.clean": "ساده",
+    "color.auto": "خودکار",
+    "color.black": "مشکی",
+    "color.blue": "آبی",
+    "color.red": "قرمز",
+    "color.green": "سبز",
+    "color.purple": "بنفش",
+    "s.captions": "زیرنویس",
+    "s.captionStyle": "سبک",
+    "s.captionsHint": "روی ویدیو چاپ می‌شود. فایل SRT هم همیشه ذخیره می‌شود",
+    "s.off": "خاموش",
+    "s.capClean": "ساده",
+    "s.capBox": "کادردار",
+    "s.capHighlight": "هایلایت کلمه",
+    "s.capPop": "پاپ (شورتس)",
+    "s.capPosition": "جایگاه",
+    "s.capSize": "اندازه",
+    "s.capColor": "رنگ هایلایت",
+    "s.capColorHint": "رنگ کلمه‌ای که در حال گفته‌شدن است",
+    "a.sfx": "صدای کشیدن",
+    "a.sfxHint": "صدای ماژیک روی وایت‌برد (روی تخته‌های تیره صدای گچ)، فقط وقتی قلم روی تخته است. ساخته‌ی خود برنامه، بدون مشکل کپی‌رایت.",
+    "a.sfxOn": "صدای کشیدن",
+    "a.sfxVolume": "بلندی",
+    "a.relative": "نسبت به صدای شما، هر قدر هم صدای میکروفون کم یا زیاد باشد",
+    "a.sample": "شنیدن",
+    "a.marker": "ماژیک",
+    "a.chalk": "گچ",
+    "a.music": "موسیقی پس‌زمینه",
+    "a.musicHint": "آهنگ‌های پیش‌فرض را خود برنامه می‌سازد (استفاده‌ی آزاد). می‌توانید آهنگ خودتان را هم اضافه کنید.",
+    "a.noMusic": "بدون موسیقی",
+    "a.voiceOnly": "فقط صدای گوینده و صدای کشیدن",
+    "a.yourTrack": "آهنگ شما",
+    "a.listen": "شنیدن",
+    "a.preparing": "در حال آماده‌سازی آهنگ (بار اول چند ثانیه طول می‌کشد)…",
+    "a.deleteConfirm": "این آهنگ حذف شود؟",
+    "a.drop": "آهنگ خودتان را اینجا بکشید",
+    "a.musicVolume": "بلندی موسیقی",
+    "a.ducking": "آرام شدن زیر صدا",
+    "a.duckingHint": "وقتی حرف می‌زنید موسیقی چقدر آرام‌تر شود",
+    "a.loudness": "بلندی نهایی",
+    "a.loudnessHint": "بلندی کل ویدیو را به استاندارد پلتفرم‌ها می‌رساند، بدون خش.",
+    "a.normalize": "یکسان‌سازی بلندی",
+    "a.target": "هدف",
+    "a.player": "پخش‌کننده",
+    "music.calm": "آرام",
+    "music.calm.hint": "کالیمبا و پد نرم، ۷۲ ضرب",
+    "music.bright": "شاد",
+    "music.bright.hint": "ماریمبا و درام سبک، ۱۰۰ ضرب",
+    "music.focus": "تمرکز",
+    "music.focus.hint": "پیانوی الکتریک لوفای، ۸۴ ضرب",
+
     "help.html": `
       <h1>راهنما</h1>
       <h2>ساخت ویدیو در ۵ مرحله</h2>
@@ -406,6 +583,17 @@ python -m swa render "my-video"</pre>
         <li><b>خروجی</b>: فایل MP4 همراه با نریشن ساخته می‌شود.</li>
       </ol>
       <p>یا دکمه‌ی <b>ساخت ویدیو</b> را بزنید تا همگام‌سازی و ساخت با یک کلیک انجام شود.</p>
+      <h2>نوشتن کلمه روی تخته</h2>
+      <ul>
+        <li>دور کلمه در اسکریپت ستاره بگذارید: <code>1. زندگی به سبک *اسپارتی*.</code> دست دقیقاً همان لحظه‌ای که «اسپارتی» گفته می‌شود آن را روی تخته می‌نویسد (طراحی تصویر لحظه‌ای مکث می‌کند).</li>
+        <li>چند کلمه: <code>*سپر و نیزه*</code>.</li>
+        <li>خطی که تصویر ندارد، کلمه‌به‌کلمه هم‌زمان با گفته‌شدن نوشته می‌شود؛ برای عنوان، نقل‌قول و عدد عالی است.</li>
+      </ul>
+      <h2>زیرنویس و صدا</h2>
+      <ul>
+        <li><b>ظاهر ← زیرنویس</b>: ساده، کادردار، هایلایت کلمه یا پاپ به سبک شورتس. فایل زیرنویس SRT کنار هر ویدیو ذخیره می‌شود.</li>
+        <li><b>صدا</b>: صدای ماژیک یا گچ هم‌زمان با قلم، موسیقی پیش‌فرض که زیر صدای شما آرام می‌شود، و بلندی استاندارد یوتیوب (−14 LUFS).</li>
+      </ul>
       <h2>بهترین تصویرها</h2>
       <ul>
         <li>طرح خطی تمیز روی پس‌زمینه‌ی سفید ساده طبیعی‌ترین نتیجه را می‌دهد.</li>

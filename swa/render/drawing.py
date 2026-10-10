@@ -33,14 +33,14 @@ class PreparedDrawing:
         return self.line_a.shape[1], self.line_a.shape[0]
 
 
-def fit_rect(img_w: int, img_h: int, frame_w: int, frame_h: int, margin: float) -> tuple[int, int, int, int]:
-    """Largest rect with the image's aspect ratio inside the frame margins."""
-    mx, my = int(frame_w * margin), int(frame_h * margin)
-    aw, ah = frame_w - 2 * mx, frame_h - 2 * my
+def fit_rect(img_w: int, img_h: int, area: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+    """Largest rect with the image's aspect ratio, centred in `area` (x0, y0, x1, y1)."""
+    ax0, ay0, ax1, ay1 = area
+    aw, ah = max(2, ax1 - ax0), max(2, ay1 - ay0)
     s = min(aw / img_w, ah / img_h)
     w, h = max(2, int(img_w * s)), max(2, int(img_h * s))
-    x0 = (frame_w - w) // 2
-    y0 = (frame_h - h) // 2
+    x0 = ax0 + (aw - w) // 2
+    y0 = ay0 + (ah - h) // 2
     return x0, y0, x0 + w, y0 + h
 
 
@@ -111,12 +111,12 @@ def _ink_mask(bgr: np.ndarray, fg: np.ndarray) -> np.ndarray:
     return keep[lab]
 
 
-def prepare_raster(path: Path, frame_w: int, frame_h: int, margin: float, dark: bool,
+def prepare_raster(path: Path, area: tuple[int, int, int, int], dark: bool,
                    order: str, start: tuple[float, float]) -> PreparedDrawing:
     img = imread(path)
     if img is None:
         raise ValueError(f"Cannot read image {path}")
-    rect = fit_rect(img.shape[1], img.shape[0], frame_w, frame_h, margin)
+    rect = fit_rect(img.shape[1], img.shape[0], area)
     w, h = rect[2] - rect[0], rect[3] - rect[1]
     interp = cv2.INTER_AREA if w < img.shape[1] else cv2.INTER_CUBIC
     img = cv2.resize(img, (w, h), interpolation=interp)
@@ -206,14 +206,14 @@ def _sample_subpath(sub, scale: float, ox: float, oy: float, step: float = 3.0) 
     return arr
 
 
-def prepare_svg(path: Path, frame_w: int, frame_h: int, margin: float, dark: bool,
+def prepare_svg(path: Path, area: tuple[int, int, int, int], dark: bool,
                 thickness: float = 1.0) -> PreparedDrawing:
     from svgelements import SVG, Path as SvgPath, Shape
 
     svg = SVG.parse(str(path), reify=True)
     vw = float(svg.width or 0) or 1000.0
     vh = float(svg.height or 0) or 1000.0
-    rect = fit_rect(int(vw), int(vh), frame_w, frame_h, margin)
+    rect = fit_rect(int(vw), int(vh), area)
     w, h = rect[2] - rect[0], rect[3] - rect[1]
     ss = 2  # supersampling for smooth anti-aliased edges
     scale = w / vw
@@ -264,7 +264,8 @@ def prepare_svg(path: Path, frame_w: int, frame_h: int, margin: float, dark: boo
                 cv2.polylines(full_a, [pts], False, 255, t, cv2.LINE_AA)
                 cv2.polylines(line, [pts], False, color, t, cv2.LINE_AA)
                 cv2.polylines(line_a, [pts], False, 255, t, cv2.LINE_AA)
-                r = np.full(len(s), width_px / 2 + 2.0, dtype=np.float32)
+                # Reveal exactly the stroke itself (+AA edge), so crossing strokes do not peek through.
+                r = np.full(len(s), width_px / 2 + 0.8, dtype=np.float32)
                 strokes.append(Stroke(s.astype(np.float32), r))
 
     def down(img):
@@ -287,21 +288,28 @@ def prepare_svg(path: Path, frame_w: int, frame_h: int, margin: float, dark: boo
 
 
 # ──────────────────────────────────────────────────────────────
-def prepare(path: Path, frame_w: int, frame_h: int, settings: dict, dark: bool,
-            language: str) -> PreparedDrawing:
+def content_area(frame_w: int, frame_h: int, settings: dict) -> tuple[int, int, int, int]:
+    """The frame minus the image margin."""
     margin = float(settings.get("image_margin", 0.05))
+    mx, my = int(frame_w * margin), int(frame_h * margin)
+    return mx, my, frame_w - mx, frame_h - my
+
+
+def prepare(path: Path, area: tuple[int, int, int, int], settings: dict, dark: bool,
+            language: str) -> PreparedDrawing:
+    """Prepare an image to be drawn inside `area` (frame px)."""
     order = settings.get("stroke_order", "auto")
     if order == "auto":
         order = "right_to_left" if language == "fa" else "left_to_right"
-    # The pen starts from the corner where reading starts.
-    start = (frame_w, 0.0) if order == "right_to_left" else (0.0, 0.0)
     if path.suffix.lower() == ".svg":
-        d = prepare_svg(path, frame_w, frame_h, margin, dark, float(settings.get("line_thickness", 1.0)))
+        d = prepare_svg(path, area, dark, float(settings.get("line_thickness", 1.0)))
     else:
-        d = prepare_raster(path, frame_w, frame_h, margin, dark, order, start)
+        # The pen starts from the corner where reading starts.
+        start = (area[2], area[1]) if order == "right_to_left" else (area[0], area[1])
+        d = prepare_raster(path, area, dark, order, start)
     # Strokes and sweeps in frame coordinates are easier for the compositor.
     x0, y0 = d.rect[0], d.rect[1]
-    for s in d.strokes:
-        s.points = s.points + np.array([x0, y0], dtype=np.float32)
+    for st in d.strokes:
+        st.points = st.points + np.array([x0, y0], dtype=np.float32)
     d.color_paths = [(p + np.array([x0, y0], dtype=np.float32), r) for p, r in d.color_paths]
     return d

@@ -209,8 +209,13 @@ def order_groups(stats: np.ndarray, order: str) -> list[int]:
     return [it[0] for it in sorted(items, key=key)]
 
 
-def order_strokes(strokes: list[Stroke], group_order: list[int], start: tuple[float, float]) -> list[Stroke]:
-    """Greedy nearest-neighbour ordering inside each object."""
+def order_strokes(strokes: list[Stroke], group_order: list[int], start: tuple[float, float],
+                  prefer_long: bool = True) -> list[Stroke]:
+    """Greedy nearest-neighbour ordering inside each object.
+
+    prefer_long: start objects with their long outline strokes (drawings);
+    handwriting turns this off and simply follows the pen.
+    """
     rank = {g: i for i, g in enumerate(group_order)}
     by_group: dict[int, list[Stroke]] = {}
     for s in strokes:
@@ -221,10 +226,11 @@ def order_strokes(strokes: list[Stroke], group_order: list[int], start: tuple[fl
     for g in groups:
         pool = by_group[g]
         # Long strokes first inside a group feels like "outline, then details".
-        pool.sort(key=lambda s: -s.length)
+        if prefer_long:
+            pool.sort(key=lambda s: -s.length)
         heads = np.array([s.points[0] for s in pool])
         tails = np.array([s.points[-1] for s in pool])
-        lengths = np.array([s.length for s in pool])
+        lengths = np.array([s.length for s in pool]) if prefer_long else np.zeros(len(pool))
         alive = np.ones(len(pool), dtype=bool)
         for _ in range(len(pool)):
             dh = np.linalg.norm(heads - pen, axis=1)

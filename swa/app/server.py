@@ -1,8 +1,6 @@
 """Local web app: http://127.0.0.1:7860 (only reachable from this computer)."""
 from __future__ import annotations
 
-import io
-import json
 import os
 import shutil
 import subprocess
@@ -14,8 +12,9 @@ import zipfile
 from pathlib import Path
 
 import cv2
+import numpy as np
 from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from .. import __version__, paths
@@ -62,6 +61,8 @@ def _jpeg(img, quality: int = 85) -> Response:
 def _coerce(key: str, value):
     default = DEFAULT_SETTINGS[key]
     if isinstance(default, bool):
+        if isinstance(value, str):
+            return value.strip().lower() in ("1", "true", "yes", "on")
         return bool(value)
     if isinstance(default, int) and not isinstance(default, bool):
         return int(float(value))
@@ -374,14 +375,19 @@ def get_output(slug: str, name: str, download: bool = False):
     for folder in (proj.output_dir, proj.root / ".previews"):
         p = folder / Path(name).name
         if p.exists():
-            return FileResponse(p, media_type="video/mp4", filename=p.name if download else None)
+            kind = "text/plain; charset=utf-8" if p.suffix.lower() in (".srt", ".vtt") else "video/mp4"
+            return FileResponse(p, media_type=kind, filename=p.name if download else None)
     raise HTTPException(404, "Not found")
 
 
 @app.delete("/api/projects/{slug}/output/{name}")
 def delete_output(slug: str, name: str):
     proj = _proj(slug)
-    _safe_child(proj.output_dir, name).unlink()
+    p = _safe_child(proj.output_dir, name)
+    p.unlink()
+    for side in (p.with_suffix(".srt"), p.with_suffix(".vtt")):
+        if side.exists():
+            side.unlink()
     return {"ok": True}
 
 
@@ -503,6 +509,83 @@ def remove_hand(hand_id: str):
 
 
 # ──────────────────────────────────────────────────────────────
+# fonts (handwriting)
+# ──────────────────────────────────────────────────────────────
+@app.get("/api/fonts")
+def get_fonts():
+    from ..render.text import FONTS
+    return [{"id": k, "name": v[1], "script": v[2]} for k, v in FONTS.items() if k != "caption"]
+
+
+@app.get("/api/fonts/preview")
+def font_preview(id: str, text: str = ""):
+    from ..render.text import FONTS, FontPair, layout_text, render_layout
+
+    if id not in FONTS:
+        raise HTTPException(404, "Unknown font")
+    if not text:
+        text = "Life, the Spartan way" if FONTS[id][2] == "latin" else "\u0632\u0646\u062f\u06af\u06cc \u0627\u0633\u067e\u0627\u0631\u062a\u06cc"
+    pair = FontPair.get(id, id)
+    lay = layout_text(text[:60], pair, 56)
+    alpha, _ = render_layout(lay, pad=6)
+    img = np.dstack([np.full(alpha.shape + (3,), 30, np.uint8), (alpha * 255).astype(np.uint8)])
+    ok, buf = cv2.imencode(".png", img)
+    return Response(buf.tobytes(), media_type="image/png")
+
+
+# ──────────────────────────────────────────────────────────────
+# music & sounds
+# ──────────────────────────────────────────────────────────────
+@app.get("/api/music")
+def get_music():
+    from ..render.music import list_music
+    return list_music()
+
+
+@app.get("/api/music/play")
+def play_music(id: str):
+    from ..render.music import resolve_music
+    try:
+        p = resolve_music(id)
+    except Exception as exc:
+        raise HTTPException(500, f"Could not prepare music: {exc}")
+    if p is None:
+        raise HTTPException(404, "Unknown track")
+    return FileResponse(p)
+
+
+@app.post("/api/music")
+def upload_music(file: UploadFile = File(...)):
+    from ..render.music import MUSIC_EXTS, music_dir
+    name = Path(file.filename or "music.mp3").name
+    ext = Path(name).suffix.lower()
+    if ext not in MUSIC_EXTS:
+        raise HTTPException(400, "Use MP3, WAV, M4A, OGG or FLAC")
+    music_dir().mkdir(parents=True, exist_ok=True)
+    dst = music_dir() / f"{slugify(Path(name).stem)}{ext}"
+    _save_upload(file, dst)
+    return {"id": f"file:{dst.name}"}
+
+
+@app.delete("/api/music/{name}")
+def delete_music(name: str):
+    from ..render.music import music_dir
+    _safe_child(music_dir(), name).unlink()
+    return {"ok": True}
+
+
+@app.get("/api/sfx/preview")
+def sfx_preview(dark: bool = False):
+    from ..render.audio import sfx_preview as make
+    d = paths.DATA / ".cache"
+    d.mkdir(parents=True, exist_ok=True)
+    out = d / f"sfx-{'chalk' if dark else 'marker'}.wav"
+    if not out.exists():
+        make(dark, 1.0, out)
+    return FileResponse(out, media_type="audio/wav")
+
+
+# ──────────────────────────────────────────────────────────────
 # backgrounds
 # ──────────────────────────────────────────────────────────────
 @app.get("/api/backgrounds")
@@ -566,6 +649,17 @@ def run(port: int = 7860, open_browser: bool = True) -> None:
                 port = candidate
                 break
     url = f"http://127.0.0.1:{port}"
+
+    def warm_up():
+        # Compose the built-in music once in the background so previews start instantly.
+        from ..render.music import BUILTIN, resolve_music
+        for style in BUILTIN:
+            try:
+                resolve_music(f"builtin:{style}")
+            except Exception:
+                pass
+
+    threading.Thread(target=warm_up, daemon=True).start()
     print(f"\n  Simple Whiteboard Animation is running at {url}\n  Close this window to stop it.\n")
     if open_browser:
         threading.Timer(1.2, lambda: webbrowser.open(url)).start()

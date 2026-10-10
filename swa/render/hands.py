@@ -105,12 +105,43 @@ def delete_hand(hand_id: str) -> None:
     shutil.rmtree(d)
 
 
-class HandSprite:
-    """A hand scaled for one video size, ready to paste onto frames."""
+def _extend_arm(png: np.ndarray, tip: tuple[float, float], length: int) -> tuple[np.ndarray, tuple[float, float]]:
+    """Continue an arm that leaves the bottom of the PNG, following its slant."""
+    alpha = png[:, :, 3]
+    if (alpha[-1] > 128).mean() <= 0.08 or len(png) < 8:
+        return png, tip
 
-    def __init__(self, hand_dir: Path, base: int, scale: float = 1.0, frame_h: int | None = None):
-        """`base` is the frame's shorter side; hand size is relative to it."""
-        frame_h = frame_h or base
+    def centre(row: np.ndarray) -> float | None:
+        xs = np.nonzero(row > 128)[0]
+        return float(xs.mean()) if len(xs) else None
+
+    look = min(len(png) - 1, max(4, len(png) // 8))
+    c1, c0 = centre(alpha[-1]), centre(alpha[-1 - look])
+    slope = 0.0 if c1 is None or c0 is None else float(np.clip((c1 - c0) / look, -1.0, 1.0))
+    h, w = png.shape[:2]
+    drift = int(round(abs(slope) * length)) + 2
+    left_pad = drift if slope < 0 else 0
+    out = np.zeros((h + length, w + drift, 4), np.uint8)
+    out[:h, left_pad:left_pad + w] = png
+    bottom = png[-1]
+    for k in range(length):
+        x = left_pad + int(round(slope * (k + 1)))
+        out[h + k, x:x + w] = bottom
+    return out, (tip[0] + left_pad, tip[1])
+
+
+class HandRig:
+    """A hand scaled for one video size that moves like a real one.
+
+    The PNG is rotated around the pen tip (so the tip always stays on the
+    line): the arm swings with the tip position, flexes a little while
+    drawing and leans into the stroke direction. Between strokes the hand
+    lifts (a bit larger, shadow further away). A soft shadow falls on the
+    board. `mirror` turns it into a left hand.
+    """
+
+    def __init__(self, hand_dir: Path, frame_w: int, frame_h: int, scale: float = 1.0,
+                 mirror: bool = False, motion: bool = True, shadow: bool = True):
         meta = _meta(hand_dir)
         png = imread(hand_dir / "hand.png")
         if png is None:
@@ -123,33 +154,96 @@ class HandSprite:
         x0, y0, x1, y1 = xs.min(), ys.min(), xs.max() + 1, ys.max() + 1
         png = png[y0:y1, x0:x1]
         tip = (tip[0] - x0, tip[1] - y0)
+        base = min(frame_w, frame_h)
         target_h = max(8, int(base * float(meta.get("size", 0.46)) * scale))
         s = target_h / png.shape[0]
         png = cv2.resize(png, (max(1, int(png.shape[1] * s)), target_h),
                          interpolation=cv2.INTER_AREA if s < 1 else cv2.INTER_LINEAR)
-        self.tip = (int(round(tip[0] * s)), int(round(tip[1] * s)))
-        # If the arm runs off the bottom of the PNG, continue it so it never
-        # ends in the middle of the frame.
-        bottom = png[-1:, :, :]
-        if (bottom[0, :, 3] > 128).mean() > 0.08:
-            png = np.concatenate([png, np.repeat(bottom, frame_h, axis=0)], axis=0)
-        a = png[:, :, 3:4].astype(np.float32) / 255.0
-        self.premul = png[:, :, :3].astype(np.float32) * a
-        self.inv_alpha = 1.0 - a
-        self.h, self.w = png.shape[:2]
+        tip = (tip[0] * s, tip[1] * s)
+        # If the arm runs off the bottom of the PNG, continue it along its own
+        # direction so it never ends in the middle of the frame (also when the
+        # hand rotates).
+        png, tip = _extend_arm(png, tip, int(frame_h * 1.2))
+        if mirror:
+            png = np.ascontiguousarray(png[:, ::-1])
+            tip = (png.shape[1] - 1 - tip[0], tip[1])
+        self.sprite = png
+        self.tip = tip
+        self.W, self.H = frame_w, frame_h
+        self.mirror = mirror
+        self.motion = motion
+        self.shadow = shadow
+        self.reset()
 
-    def paste(self, frame: np.ndarray, x: float, y: float) -> None:
-        """Paste so that the pen tip lands on (x, y). Modifies `frame` in place."""
+    def reset(self) -> None:
+        self._angle: float | None = None
+        self._lift = 1.0
+        self._prev: tuple[float, float] | None = None
+        self._vx = 0.0
+
+    @property
+    def offscreen(self) -> tuple[float, float]:
+        """A resting point outside the frame where the hand waits."""
+        return (self.W * (0.18 if self.mirror else 0.82), self.H * 1.12)
+
+    # ── pose ──────────────────────────────────────────────
+    def _target_angle(self, x: float, y: float, t: float, down: bool) -> float:
+        if not self.motion:
+            return 0.0
+        side = -1.0 if self.mirror else 1.0
+        # Reaching away from the shoulder (bottom right) swings the forearm flatter.
+        reach = (self.W * 0.6 - x) / (self.W * 0.6) if not self.mirror else (x - self.W * 0.4) / (self.W * 0.6)
+        angle = 9.0 * float(np.clip(reach, -1.0, 1.4)) + 4.0 * float(np.clip(y / self.H - 0.5, -0.6, 0.6))
+        flex = 1.0 * np.sin(2 * np.pi * 0.9 * t) + 0.45 * np.sin(2 * np.pi * 2.3 * t + 1.3)
+        angle += flex * (1.0 if down else 0.5)
+        angle += float(np.clip(-self._vx / self.W * 4.0, -3.0, 3.0))
+        return side * angle
+
+    def draw(self, frame: np.ndarray, x: float, y: float, t: float, down: bool, dt: float) -> None:
+        """Paste the hand with its tip at (x, y), updating its smooth motion state."""
+        if self._prev is not None and dt > 0:
+            vx = (x - self._prev[0]) / dt
+            self._vx += (vx - self._vx) * min(1.0, dt / 0.15)
+        self._prev = (x, y)
+        target = self._target_angle(x, y, t, down)
+        k = 1.0 - np.exp(-dt / 0.12) if dt > 0 else 1.0
+        self._angle = target if self._angle is None else self._angle + (target - self._angle) * k
+        lift_target = 0.0 if down else 1.0
+        self._lift += (lift_target - self._lift) * (1.0 - np.exp(-dt / 0.06) if dt > 0 else 1.0)
+        self.paste(frame, x, y, self._angle, self._lift)
+
+    def paste(self, frame: np.ndarray, x: float, y: float, angle: float = 0.0, lift: float = 0.0) -> None:
+        """Rotate the sprite around its tip by `angle` degrees and composite it at (x, y)."""
         fh, fw = frame.shape[:2]
-        left = int(round(x)) - self.tip[0]
-        top = int(round(y)) - self.tip[1]
-        fx0, fy0 = max(0, left), max(0, top)
-        fx1, fy1 = min(fw, left + self.w), min(fh, top + self.h)
-        if fx0 >= fx1 or fy0 >= fy1:
+        sh, sw = self.sprite.shape[:2]
+        scale = 1.0 + 0.025 * lift
+        M = cv2.getRotationMatrix2D(self.tip, angle, scale)
+        M[0, 2] += x - self.tip[0]
+        M[1, 2] += y - self.tip[1]
+        corners = np.array([[0, 0, 1], [sw, 0, 1], [0, sh, 1], [sw, sh, 1]], np.float64) @ M.T
+        dx = int(fw * (0.006 + 0.012 * lift)) if self.shadow else 0
+        dy = int(fh * (0.010 + 0.016 * lift)) if self.shadow else 0
+        x0 = max(0, int(np.floor(corners[:, 0].min())))
+        y0 = max(0, int(np.floor(corners[:, 1].min())))
+        x1 = min(fw, int(np.ceil(corners[:, 0].max())) + dx + 1)
+        y1 = min(fh, int(np.ceil(corners[:, 1].max())) + dy + 1)
+        if x0 >= x1 or y0 >= y1:
             return
-        sx0, sy0 = fx0 - left, fy0 - top
-        sx1, sy1 = sx0 + (fx1 - fx0), sy0 + (fy1 - fy0)
-        region = frame[fy0:fy1, fx0:fx1].astype(np.float32)
-        region *= self.inv_alpha[sy0:sy1, sx0:sx1]
-        region += self.premul[sy0:sy1, sx0:sx1]
-        frame[fy0:fy1, fx0:fx1] = region.astype(np.uint8)
+        Mr = M.copy()
+        Mr[0, 2] -= x0
+        Mr[1, 2] -= y0
+        roi_w, roi_h = x1 - x0, y1 - y0
+        warped = cv2.warpAffine(self.sprite, Mr, (roi_w, roi_h), flags=cv2.INTER_LINEAR,
+                                borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0, 0))
+        a = cv2.multiply(warped[:, :, 3], 1 / 255, dtype=cv2.CV_32F)
+        region = np.ascontiguousarray(frame[y0:y1, x0:x1])
+        if self.shadow and dy < roi_h and dx < roi_w:
+            # Soft shadow: blurred silhouette, shifted down-right, at quarter resolution.
+            q = 4
+            small = cv2.resize(a, (max(1, roi_w // q), max(1, roi_h // q)), interpolation=cv2.INTER_AREA)
+            small = cv2.GaussianBlur(small, (0, 0), 2.5 + 2.5 * lift)
+            sha = cv2.resize(small, (roi_w, roi_h), interpolation=cv2.INTER_LINEAR)
+            keep = np.ones_like(sha)
+            keep[dy:, dx:] -= (0.22 - 0.07 * lift) * sha[:roi_h - dy, :roi_w - dx]
+            region = cv2.blendLinear(region, np.zeros_like(region), keep, 1.0 - keep)
+        frame[y0:y1, x0:x1] = cv2.blendLinear(np.ascontiguousarray(warped[:, :, :3]), region, a, 1.0 - a)

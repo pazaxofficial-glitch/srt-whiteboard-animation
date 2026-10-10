@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/demo.gif" width="100%" alt="A hand drawing a Spartan helmet, a shield and spear, and mountains with a running soldier, one picture per narration line">
+  <img src="docs/images/demo.gif" width="100%" alt="A hand draws a Spartan helmet and writes the word Spartan as it is spoken, then a shield and spear, mountains, and finally writes a whole line of text, with word-by-word captions underneath">
 </p>
 
 ## What it does
@@ -32,17 +32,24 @@ You upload three things:
 Whisper listens to the narration and finds the exact moment each line is
 spoken. When line 58 starts, the hand starts drawing image 58: outline first,
 then colour, moving while the narrator speaks and slowing down in pauses.
-Then the board changes and the next drawing begins. You get an MP4 with your
-voice-over.
+Mark a word in the script like `*this*` and the hand writes it on the board the
+moment it is said. Then the board changes and the next drawing begins.
+
+You get an MP4 with your voice-over, marker sounds that follow the pen,
+optional background music that dips under your voice, burned-in captions and
+an SRT subtitle file.
 
 <p align="center"><img src="docs/images/app.jpg" width="100%" alt="The app: purple and black interface with board, hand and drawing options and a live preview"></p>
 
 ## Features
 
 - **Voice-synced drawing**: each image starts on the first word of its line (Whisper word timestamps, aligned to your script so recognition mistakes do not matter)
-- **Natural pen**: line art is traced into real pen strokes; the hand follows them, lifts between strokes and colours in afterwards. SVG images are drawn exactly along their paths
+- **Words written as they are spoken**: `*marked*` words are handwritten next to the picture on the exact word; lines without a picture are written out word by word (English and Persian handwriting fonts)
+- **Natural pen and hand**: line art is traced into real pen strokes; the hand follows them, lifts between strokes, swings and flexes like a real arm and casts a soft shadow. SVG images are drawn exactly along their paths
+- **Captions**: clean, boxed, highlighted-word (karaoke) or Shorts-style pop, in English and Persian, plus an SRT file for YouTube
+- **Sound design**: marker or chalk sounds only while the pen touches the board, a whoosh on transitions, three built-in music tracks composed by the app (or your own), automatic ducking under the voice and loudness set to −14 LUFS
 - **Boards**: whiteboard, plain white, paper, chalkboard, blackboard, or your own image. On dark boards dark ink turns into chalk automatically
-- **Hands**: built-in marker hand, or upload any number of your own PNG hands and click where the pen tip is
+- **Hands**: built-in marker hand, or upload any number of your own PNG hands and click where the pen tip is; left-hand mode
 - **Styles**: outline then colour, draw directly in colour, or line art only; slide / fade / wipe / cut transitions
 - **Formats**: 16:9 YouTube, 9:16 Shorts/Reels, 1:1, 4:5, from 720p to 4K, 24/30/60 fps
 - **Fine control**: edit any line's start/end, play a line's audio, render a preview of a single line
@@ -79,9 +86,10 @@ for a one-click icon.
 
 1. **Narration & script**: upload the voice-over and paste the script. Numbered lines (`1.` `2)` `[3]` `4 -`) or one line per row. Persian digits work too.
 2. **Images**: drop all images at once (or a ZIP). The number in each file name decides its line: `7.png`, `007.jpg`, `scene_7.png` all belong to line 7. Missing images are highlighted; the previous drawing simply stays on screen.
-3. **Style**: board, hand and hand size, drawing style, pen rhythm, drawing time, transitions, format, resolution. A live preview shows the finished look.
-4. **Sync**: *Whisper* (exact), *Import SRT* (use existing subtitle timing) or *Estimate* (quick draft). Then adjust any line in the timeline table, play it, or render a preview of just that line.
-5. **Export**: render the MP4 (High quality or Fast draft) and download it.
+3. **Style**: board, hand, handwriting fonts, captions, drawing style, pen rhythm, transitions, format, resolution. A live preview shows the finished look.
+4. **Audio**: drawing sounds, background music (listen before choosing), ducking and loudness.
+5. **Sync**: *Whisper* (exact), *Import SRT* (use existing subtitle timing) or *Estimate* (quick draft). Then adjust any line in the timeline table, play it, or render a preview of just that line.
+6. **Export**: render the MP4 (High quality or Fast draft) and download it with its SRT subtitles.
 
 Or press **Make video**: it syncs (if needed) and renders in one click.
 
@@ -92,6 +100,41 @@ Or press **Make video**: it syncs (if needed) and renders in one click.
 - **Drawing time** controls how much of each line is spent drawing; the rest shows the finished picture. **Longest drawing** caps very long lines.
 - **Pen rhythm → Follow the voice** moves the pen while words are spoken and slows it in pauses. **Steady speed** draws evenly.
 - For Persian videos, set **Drawing order → Right → left** (Auto does this when the script is Persian).
+
+## Write words on the board
+
+Put stars around words in the script and the hand writes them on the board at
+the moment they are spoken; the picture pauses for that moment and then
+continues:
+
+```text
+1. Life, the *Spartan* way.
+2. Every boy was given a *shield and a spear*.
+3. *۳۰۰* سرباز اسپارتی در برابر هزاران نفر ایستادند.
+```
+
+A line that has no image is written out completely, word by word, in time with
+the narrator: good for titles, quotes, numbers and summaries. (Prefer the old
+behaviour? Style → Handwriting → *Keep previous drawing*.)
+
+Handwriting fonts: Marker, Casual, Neat, Bold caps for English; Naskh,
+Playful, Display, Clean for Persian. Ink colour, position (above or below the
+picture) and writing speed are adjustable.
+
+## Captions and sound
+
+- **Captions** (Style → Captions): the word being spoken is highlighted in the
+  colour you choose. *Pop* shows 1–3 big words at a time for Shorts and Reels.
+  Every full render also saves `video.srt` next to `video.mp4`.
+- **Drawing sounds** (Audio): synthesized by the app, marker on light boards
+  and chalk on dark ones, louder when the pen moves faster, silent when it
+  lifts.
+- **Music** (Audio): *Calm*, *Bright* and *Focus* are composed by the app and
+  free to use; or upload your own tracks. Music dips automatically while you
+  speak.
+- **Levels** are set relative to your voice, so a quiet or loud microphone
+  gives the same balance, and the final mix is normalized to −14 LUFS
+  (YouTube), −16 (podcast) or −23 (TV).
 
 ## Let Claude Code draw the images
 
@@ -139,7 +182,7 @@ data/projects/the-spartan-way/
   images/           1.png, 2.svg, ... (number = script line)
   transcript.json   saved Whisper result (re-sync is instant)
   timeline.json     start/end of every line (editable in the app)
-  output/           rendered videos
+  output/           rendered videos (.mp4) and subtitles (.srt)
 ```
 
 Set the `SWA_DATA` environment variable to keep projects somewhere else.
@@ -168,3 +211,8 @@ Code map and conventions: [`CLAUDE.md`](CLAUDE.md).
 
 MIT, see [LICENSE](LICENSE). Grew out of the original *srt-whiteboard-animation*
 skill by 江哥是老登啊.
+
+Bundled fonts: Patrick Hand, Caveat, Kalam, Mirza, Marhey, Katibeh and
+Vazirmatn (SIL Open Font License) and Permanent Marker (Apache 2.0); licences
+in [`assets/fonts/licenses`](assets/fonts/licenses). Built-in music and sounds
+are generated by the app's own code.

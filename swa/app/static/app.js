@@ -191,7 +191,8 @@ function confirmModal(text) {
 }
 
 /* ── project ─────────────────────────────────────────── */
-const TABS = ["content", "images", "style", "sync", "export"];
+const TABS = ["content", "images", "style", "audio", "sync", "export"];
+const NEUTRAL_TABS = ["style", "audio"];
 
 async function loadProject(slug) {
   state.project = await api(`/api/projects/${encodeURIComponent(slug)}`);
@@ -205,6 +206,7 @@ async function viewProject(slug, tab) {
     content: !!p.narration && p.lines > 0,
     images: p.lines > 0 && p.missing_images.length === 0,
     style: true,
+    audio: true,
     sync: p.aligned,
     export: p.renders.length > 0,
   };
@@ -228,11 +230,11 @@ async function viewProject(slug, tab) {
       } }, t("w.delete")),
       h("button", { class: "btn primary big", onclick: () => oneClick(slug) }, icon("sparkle"), t("p.makeVideo"))));
   const tabs = h("div", { class: "tabs" }, TABS.map((k, i) =>
-    h("a", { href: `#/p/${enc}/${k}`, class: (k === tab ? "active " : "") + (done[k] && k !== "style" ? "done" : "") },
-      h("span", { class: "n" }, done[k] && k !== "style" ? "✓" : i + 1), t("tab." + k))));
+    h("a", { href: `#/p/${enc}/${k}`, class: (k === tab ? "active " : "") + (done[k] && !NEUTRAL_TABS.includes(k) ? "done" : "") },
+      h("span", { class: "n" }, done[k] && !NEUTRAL_TABS.includes(k) ? "✓" : i + 1), t("tab." + k))));
   const body = h("div", {});
   $("#view").replaceChildren(head, tabs, body);
-  const fn = { content: tabContent, images: tabImages, style: tabStyle, sync: tabSync, export: tabExport }[tab] || tabContent;
+  const fn = { content: tabContent, images: tabImages, style: tabStyle, audio: tabAudio, sync: tabSync, export: tabExport }[tab] || tabContent;
   await fn(body, p);
   for (const j of p.jobs || []) if (j.status === "running") watchJob(j, body.querySelector(".jobslot"));
 }
@@ -242,7 +244,7 @@ async function oneClick(slug) {
   const p = state.project;
   if (!p.narration) return toast(t("msg.needNarration"), "error");
   if (!p.lines) return toast(t("msg.needScript"), "error");
-  if (!p.images) return toast(t("msg.needImages"), "error");
+  if (!p.images && p.settings.text_lines !== "write") return toast(t("msg.needImages"), "error");
   location.hash = `#/p/${encodeURIComponent(slug)}/export`;
   await new Promise((r) => setTimeout(r, 150));
   try {
@@ -335,6 +337,7 @@ async function tabContent(body, p) {
   ta.addEventListener("input", () => { status.textContent = t("msg.saving"); save(); });
   const script = h("div", { class: "card stack" },
     h("div", { class: "row spread" }, h("div", {}, h("h2", {}, t("c.script")), h("p", { class: "muted small" }, t("c.scriptHint"))), count),
+    h("p", { class: "tip small" }, t("c.marksHint")),
     ta, status, h("h3", {}, t("c.parsed")), parsedBox);
   body.replaceChildren(h("div", { class: "stack" }, narr, script,
     h("div", { class: "row", style: { justifyContent: "flex-end" } },
@@ -362,7 +365,8 @@ async function tabImages(body, p) {
   const cards = p.parsed.map((ln) => {
     const name = imgs[String(ln.id)];
     if (!name) {
-      return h("div", { class: "icard missing" }, h("div", { class: "pic" }, `${t("i.missing")} #${ln.id}`),
+      const asText = p.settings.text_lines === "write";
+      return h("div", { class: "icard missing" + (asText ? " as-text" : "") }, h("div", { class: "pic" }, asText ? t("i.asText") : `${t("i.missing")} #${ln.id}`),
         h("div", { class: "meta" }, h("span", { class: "num" }, ln.id), h("span", { class: "txt", dir: "auto" }, ln.text)));
     }
     return h("div", { class: "icard" },
@@ -381,8 +385,9 @@ async function tabImages(body, p) {
       dropzone(t("i.drop"), "PNG · JPG · WebP · SVG · ZIP", "image/*,.svg,.zip", true, upload),
       h("div", { class: "row spread" }, replaceToggle,
         h("div", { class: "row" },
-          h("span", { class: "badge " + (p.missing_images.length ? "warn" : "ok") },
-            p.missing_images.length ? `${p.missing_images.length} ${t("i.missingCount")}` : t("i.allGood")),
+          h("span", { class: "badge " + (!p.missing_images.length ? "ok" : p.settings.text_lines === "write" ? "" : "warn") },
+            !p.missing_images.length ? t("i.allGood") : p.settings.text_lines === "write"
+              ? `${p.missing_images.length} ${t("i.textCount")}` : `${p.missing_images.length} ${t("i.missingCount")}`),
           p.images ? h("button", { class: "btn ghost danger", onclick: async () => {
             if (!(await confirmModal(t("i.clearConfirm")))) return;
             await api(`/api/projects/${enc}/images`, { method: "DELETE" }).catch(fail); route();
@@ -392,21 +397,17 @@ async function tabImages(body, p) {
     h("div", { class: "row", style: { justifyContent: "flex-end" } }, h("a", { class: "btn primary", href: `#/p/${enc}/style` }, t("w.next")))));
 }
 
-/* ── tab 3: style ────────────────────────────────────── */
-async function tabStyle(body, p) {
+/* ── settings controls (shared by Style and Audio) ────── */
+function settingsKit(p, onSaved) {
   const enc = encodeURIComponent(p.slug);
-  [state.hands, state.backgrounds] = await Promise.all([api("/api/hands"), api("/api/backgrounds")]);
   const s = { ...p.settings };
-  const previewImg = h("img", { alt: "" });
-  const refresh = debounce(() => { previewImg.src = `/api/projects/${enc}/still?ts=${Date.now()}`; }, 350);
   let pending = {};
   const flush = debounce(async () => {
     const patch = pending;
     pending = {};
-    try { await api(`/api/projects/${enc}/settings`, { method: "PUT", json: patch }); refresh(); } catch (e) { fail(e); }
+    try { await api(`/api/projects/${enc}/settings`, { method: "PUT", json: patch }); if (onSaved) onSaved(); } catch (e) { fail(e); }
   }, 250);
   const set = (k, v) => { s[k] = v; pending[k] = v; flush(); };
-
   const seg = (key, options) => {
     const wrap = h("div", { class: "seg" });
     const draw = () => wrap.replaceChildren(...options.map(([val, label]) =>
@@ -420,7 +421,26 @@ async function tabStyle(body, p) {
       oninput: (e) => (out.textContent = fmt(+e.target.value)), onchange: (e) => set(key, +e.target.value) });
     return h("div", { class: "slider-row" }, input, out);
   };
-  const setting = (label, hint, control) => h("div", { class: "setting" }, h("div", { class: "lbl" }, label, hint ? h("div", { class: "hint" }, hint) : null), control);
+  const toggle = (key, onChange) => {
+    const input = h("input", { type: "checkbox", checked: s[key] ? true : null,
+      onchange: (e) => { set(key, e.target.checked); if (onChange) onChange(e.target.checked); } });
+    return h("label", { class: "switch" }, input, h("span", {}));
+  };
+  const setting = (label, hint, control) => h("div", { class: "setting" },
+    h("div", { class: "lbl" }, label, hint ? h("div", { class: "hint" }, hint) : null), control);
+  return { s, set, seg, slider, toggle, setting };
+}
+
+const pct = (v) => `${Math.round(v * 100)}%`;
+
+/* ── tab 3: style ────────────────────────────────────── */
+async function tabStyle(body, p) {
+  const enc = encodeURIComponent(p.slug);
+  let fonts;
+  [state.hands, state.backgrounds, fonts] = await Promise.all([api("/api/hands"), api("/api/backgrounds"), api("/api/fonts")]);
+  const previewImg = h("img", { alt: "" });
+  const refresh = debounce(() => { previewImg.src = `/api/projects/${enc}/still?ts=${Date.now()}`; }, 350);
+  const { s, set, seg, slider, toggle, setting } = settingsKit(p, refresh);
 
   // backgrounds
   const bgGrid = h("div", { class: "opt-grid" });
@@ -440,11 +460,49 @@ async function tabStyle(body, p) {
     h("div", { class: "opt", onclick: () => (location.hash = "#/hands") }, h("div", { class: "none" }, "+ " + t("hands.upload"))));
   drawHands();
 
-  const pct = (v) => `${Math.round(v * 100)}%`;
+  // handwriting fonts
+  const fontGrid = (key, list) => {
+    const grid = h("div", { class: "opt-grid fonts" });
+    const draw = () => grid.replaceChildren(...list.map((f) =>
+      h("div", { class: "opt font" + (s[key] === f.id ? " on" : ""), onclick: () => { set(key, f.id); draw(); } },
+        h("div", { class: "pic" }, h("img", { src: `/api/fonts/preview?id=${encodeURIComponent(f.id)}`, loading: "lazy", alt: f.name })),
+        h("div", { class: "cap" }, t("font." + f.id)))));
+    draw();
+    return grid;
+  };
+  const swatches = (key, colors) => {
+    const wrap = h("div", { class: "row", style: { gap: "8px" } });
+    const draw = () => wrap.replaceChildren(...colors.map(([id, css]) =>
+      h("button", { type: "button", class: "swatch" + (s[key] === id ? " on" : ""), title: t("color." + id),
+        style: { background: css }, onclick: () => { set(key, id); draw(); } }, id === "auto" ? "A" : "")));
+    draw();
+    return wrap;
+  };
+  const colorInput = (key) => h("input", { type: "color", value: s[key] || "#FFD43B", class: "color",
+    onchange: (e) => set(key, e.target.value) });
+
   const form = h("div", { class: "stack" },
     h("div", { class: "card" }, h("h3", {}, t("s.board")), bgGrid),
     h("div", { class: "card" }, h("h3", {}, t("s.hand")), handGrid,
-      setting(t("s.handSize"), null, slider("hand_scale", 0.5, 1.8, 0.05, pct))),
+      setting(t("s.handSize"), null, slider("hand_scale", 0.5, 1.8, 0.05, pct)),
+      setting(t("s.handMotion"), t("s.handMotionHint"), toggle("hand_motion")),
+      setting(t("s.handShadow"), null, toggle("hand_shadow")),
+      setting(t("s.handMirror"), t("s.handMirrorHint"), toggle("hand_mirror"))),
+    h("div", { class: "card" }, h("h3", {}, t("s.writing")),
+      setting(t("s.handwriting"), t("s.handwritingHint"), toggle("handwriting")),
+      setting(t("s.textLines"), t("s.textLinesHint"), seg("text_lines", [["write", t("s.writeText")], ["keep", t("s.keepDrawing")]])),
+      setting(t("s.fontLatin"), null, fontGrid("font_latin", fonts.filter((f) => f.script === "latin"))),
+      setting(t("s.fontRtl"), null, fontGrid("font_rtl", fonts.filter((f) => f.script === "rtl"))),
+      setting(t("s.textColor"), null, swatches("text_color", [["auto", "linear-gradient(135deg,#222 50%,#eee 50%)"], ["black", "#26221e"],
+        ["blue", "#1e50a0"], ["red", "#c83232"], ["green", "#288246"], ["purple", "#783caa"]])),
+      setting(t("s.textPosition"), t("s.textPositionHint"), seg("text_position", [["bottom", t("s.bottom")], ["top", t("s.top")]])),
+      setting(t("s.writeSpeed"), null, slider("write_speed", 0.5, 2, 0.1, (v) => `×${(+v).toFixed(1)}`))),
+    h("div", { class: "card" }, h("h3", {}, t("s.captions")),
+      setting(t("s.captionStyle"), t("s.captionsHint"), seg("captions", [["off", t("s.off")], ["clean", t("s.capClean")], ["box", t("s.capBox")],
+        ["highlight", t("s.capHighlight")], ["pop", t("s.capPop")]])),
+      setting(t("s.capPosition"), null, seg("caption_position", [["bottom", t("s.bottom")], ["top", t("s.top")]])),
+      setting(t("s.capSize"), null, slider("caption_size", 0.6, 1.6, 0.05, pct)),
+      setting(t("s.capColor"), t("s.capColorHint"), colorInput("caption_color"))),
     h("div", { class: "card" }, h("h3", {}, t("s.drawing")),
       setting(t("s.colorMode"), t("s.colorModeHint"), seg("color_mode", [["ink_then_color", t("s.inkThenColor")], ["color_strokes", t("s.colorStrokes")], ["ink_only", t("s.inkOnly")]])),
       setting(t("s.sync"), t("s.syncHint"), seg("sync_mode", [["speech", t("s.speech")], ["linear", t("s.linear")]])),
@@ -471,7 +529,69 @@ async function tabStyle(body, p) {
   refresh();
 }
 
-/* ── tab 4: sync ─────────────────────────────────────── */
+/* ── tab 4: audio ────────────────────────────────────── */
+async function tabAudio(body, p) {
+  const { s, set, seg, slider, toggle, setting } = settingsKit(p);
+  const player = h("audio", { controls: true, style: { width: "100%" } });
+  const play = (url, label) => {
+    player.src = url;
+    nowPlaying.textContent = label;
+    player.play().catch(() => {});
+  };
+  const nowPlaying = h("span", { class: "small muted" }, "");
+  const tracks = await api("/api/music");
+  const grid = h("div", { class: "opt-grid tracks" });
+  const draw = (list) => grid.replaceChildren(
+    h("div", { class: "opt track" + (s.music === "none" ? " on" : ""), onclick: () => { set("music", "none"); draw(list); } },
+      h("div", { class: "track-body" }, h("b", {}, t("a.noMusic")), h("span", { class: "small muted" }, t("a.voiceOnly")))),
+    ...list.map((m) => h("div", { class: "opt track" + (s.music === m.id ? " on" : ""), onclick: () => { set("music", m.id); draw(list); } },
+      h("div", { class: "track-body" },
+        h("b", {}, m.builtin ? t("music." + m.id.split(":")[1]) : m.name),
+        h("span", { class: "small muted" }, m.builtin ? t("music." + m.id.split(":")[1] + ".hint") : t("a.yourTrack"))),
+      h("div", { class: "row", style: { gap: "6px" } },
+        h("button", { class: "iconbtn", html: ICONS.play, title: t("a.listen"), onclick: (e) => {
+          e.stopPropagation();
+          if (m.builtin) toast(t("a.preparing"));
+          play(`/api/music/play?id=${encodeURIComponent(m.id)}`, m.builtin ? t("music." + m.id.split(":")[1]) : m.name);
+        } }),
+        m.builtin ? null : h("button", { class: "iconbtn", html: ICONS.x, title: t("w.delete"), onclick: async (e) => {
+          e.stopPropagation();
+          if (!(await confirmModal(t("a.deleteConfirm")))) return;
+          await api(`/api/music/${encodeURIComponent(m.id.slice(5))}`, { method: "DELETE" }).catch(fail);
+          if (s.music === m.id) set("music", "none");
+          draw(await api("/api/music"));
+        } })))));
+  draw(tracks);
+  const upload = dropzone(t("a.drop"), "MP3 · WAV · M4A · OGG · FLAC", "audio/*", true, async (files) => {
+    for (const f of files) {
+      const fd = new FormData(); fd.append("file", f);
+      try { const r = await api("/api/music", { method: "POST", form: fd }); set("music", r.id); } catch (e) { fail(e); }
+    }
+    toast(t("msg.saved"), "ok");
+    draw(await api("/api/music"));
+  });
+  body.replaceChildren(h("div", { class: "stack" },
+    h("div", { class: "card stack" },
+      h("div", {}, h("h2", {}, t("a.sfx")), h("p", { class: "muted small" }, t("a.sfxHint"))),
+      setting(t("a.sfxOn"), null, toggle("sfx")),
+      setting(t("a.sfxVolume"), t("a.relative"), slider("sfx_volume", 0, 1, 0.05, pct)),
+      setting(t("a.sample"), null, h("div", { class: "row" },
+        h("button", { class: "btn", onclick: () => play("/api/sfx/preview?dark=false", t("a.marker")) }, icon("play"), t("a.marker")),
+        h("button", { class: "btn", onclick: () => play("/api/sfx/preview?dark=true", t("a.chalk")) }, icon("play"), t("a.chalk"))))),
+    h("div", { class: "card stack" },
+      h("div", {}, h("h2", {}, t("a.music")), h("p", { class: "muted small" }, t("a.musicHint"))),
+      grid, upload,
+      setting(t("a.musicVolume"), t("a.relative"), slider("music_volume", 0, 1, 0.05, pct)),
+      setting(t("a.ducking"), t("a.duckingHint"), slider("ducking", 0, 1, 0.05, pct))),
+    h("div", { class: "card stack" },
+      h("div", {}, h("h2", {}, t("a.loudness")), h("p", { class: "muted small" }, t("a.loudnessHint"))),
+      setting(t("a.normalize"), null, toggle("normalize_audio")),
+      setting(t("a.target"), null, seg("loudness", [[-14, "YouTube −14"], [-16, "Podcast −16"], [-23, "TV −23"]]))),
+    h("div", { class: "card stack" }, h("div", { class: "row spread" }, h("h3", { style: { margin: 0 } }, t("a.player")), nowPlaying), player),
+    h("div", { class: "row", style: { justifyContent: "flex-end" } }, h("a", { class: "btn primary", href: `#/p/${encodeURIComponent(p.slug)}/sync` }, t("w.next")))));
+}
+
+/* ── tab 5: sync ─────────────────────────────────────── */
 async function tabSync(body, p) {
   const enc = encodeURIComponent(p.slug);
   const hasWhisper = state.info.whisper.length > 0;
@@ -566,7 +686,7 @@ async function tabSync(body, p) {
   body.replaceChildren(h("div", { class: "stack" }, children));
 }
 
-/* ── tab 5: export ───────────────────────────────────── */
+/* ── tab 6: export ───────────────────────────────────── */
 async function tabExport(body, p) {
   const enc = encodeURIComponent(p.slug);
   const s = p.settings;
@@ -579,8 +699,8 @@ async function tabExport(body, p) {
   const problems = [];
   if (!p.narration) problems.push(t("msg.needNarration"));
   if (!p.lines) problems.push(t("msg.needScript"));
-  if (!p.images) problems.push(t("msg.needImages"));
-  if (p.missing_images.length) problems.push(`${p.missing_images.length} ${t("i.missingCount")} (${t("e.missingOk")})`);
+  if (!p.images && p.settings.text_lines !== "write") problems.push(t("msg.needImages"));
+  if (p.missing_images.length && p.settings.text_lines !== "write") problems.push(`${p.missing_images.length} ${t("i.missingCount")} (${t("e.missingOk")})`);
   if (!p.aligned) problems.push(t("e.notSynced"));
   const render = async () => {
     try {
@@ -601,6 +721,8 @@ async function tabExport(body, p) {
     h("div", { class: "row spread" }, h("span", { class: "small muted" }, name),
       h("div", { class: "row" },
         h("a", { class: "btn", href: `/api/projects/${enc}/output/${encodeURIComponent(name)}?download=1` }, icon("download"), t("e.download")),
+        (p.subtitles || []).includes(name.replace(/\.mp4$/, ".srt"))
+          ? h("a", { class: "btn ghost", href: `/api/projects/${enc}/output/${encodeURIComponent(name.replace(/\.mp4$/, ".srt"))}?download=1` }, t("e.srt")) : null,
         h("button", { class: "iconbtn", html: ICONS.x, title: t("w.delete"), onclick: async () => {
           if (!(await confirmModal(t("e.deleteConfirm")))) return;
           await api(`/api/projects/${enc}/output/${encodeURIComponent(name)}`, { method: "DELETE" }).catch(fail); route();
