@@ -4,7 +4,8 @@ Every image (PNG/JPG/WebP or SVG) becomes a `PreparedDrawing`:
   line layer  what the pen reveals first (outlines / dark line art)
   full layer  the finished, coloured picture
   strokes     ordered polylines the pen tip follows
-  colour path brush sweeps used while colouring in
+  regions     areas to colour in, each with its own marker strokes
+  segments    parts of an SVG that wait for a spoken word (data-word="...")
 """
 from __future__ import annotations
 
@@ -15,7 +16,33 @@ import cv2
 import numpy as np
 
 from .imageio import imread
-from .strokes import Stroke, label_objects, order_groups, order_strokes, strokes_from_mask, zigzag
+from .strokes import (Stroke, fill_radius, hatch, label_objects, order_groups, order_paths, order_strokes,
+                      strokes_from_mask)
+
+MAX_REGIONS = 32        # colour regions per raster picture (smaller ones join their neighbours)
+
+
+@dataclass
+class ColorRegion:
+    """One area to colour in: marker strokes plus the soft mask they may paint inside."""
+    paths: list[np.ndarray]     # marker strokes (frame px once prepared)
+    radius: float
+    x0: int                     # mask position inside the drawing (layer px)
+    y0: int
+    mask: np.ndarray            # (h, w) uint8 0..255
+    segment: int = 0
+
+    @property
+    def area(self) -> int:
+        return int(np.count_nonzero(self.mask > 127))
+
+
+@dataclass
+class Segment:
+    """Part of a drawing that starts when a word is spoken (SVG data-word)."""
+    cue: str | None
+    strokes: tuple[int, int]    # index range in PreparedDrawing.strokes
+    regions: tuple[int, int]    # index range in PreparedDrawing.regions
 
 
 @dataclass
@@ -26,11 +53,23 @@ class PreparedDrawing:
     full_rgb: np.ndarray                  # (h, w, 3) float32
     full_a: np.ndarray                    # (h, w) float32 0..1
     strokes: list[Stroke]
-    color_paths: list[tuple[np.ndarray, float]] = field(default_factory=list)  # (points, radius)
+    regions: list[ColorRegion] = field(default_factory=list)
+    colorful: bool = False                # has colour (or shading) worth a colouring pass
+    segments: list[Segment] = field(default_factory=list)
 
     @property
     def size(self) -> tuple[int, int]:
         return self.line_a.shape[1], self.line_a.shape[0]
+
+    @property
+    def color_paths(self) -> list[tuple[np.ndarray, float]]:
+        return [(p, r.radius) for r in self.regions for p in r.paths]
+
+    def parts(self) -> list[Segment]:
+        """Segments to draw in order (the whole drawing is one untimed segment by default)."""
+        if self.segments:
+            return self.segments
+        return [Segment(None, (0, len(self.strokes)), (0, len(self.regions)))]
 
 
 def fit_rect(img_w: int, img_h: int, area: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
@@ -65,6 +104,150 @@ def chalk_texture(alpha: np.ndarray, seed: int) -> np.ndarray:
     grain = rng.random(alpha.shape, dtype=np.float32)
     grain = cv2.GaussianBlur(grain, (0, 0), 0.8)
     return alpha * np.clip(0.55 + grain * 0.7, 0, 1)
+
+
+# ──────────────────────────────────────────────────────────────
+# Colour regions
+# ──────────────────────────────────────────────────────────────
+def _soft(mask: np.ndarray, grow: int) -> np.ndarray:
+    """Boolean mask -> uint8 mask grown by `grow` px with a soft edge (no seams between regions)."""
+    m = mask.astype(np.uint8) * 255
+    if grow > 0:
+        m = cv2.dilate(m, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * grow + 1, 2 * grow + 1)))
+    return cv2.GaussianBlur(m, (0, 0), 0.7)
+
+
+def _make_region(mask: np.ndarray, diag: float, angle: float, seed: int, segment: int = 0,
+                 grow: int = 1) -> ColorRegion | None:
+    """Crop a full-size region mask and plan its marker strokes (layer px)."""
+    ys, xs = np.nonzero(mask > 0)
+    if len(xs) == 0:
+        return None
+    pad = grow + 3
+    h, w = mask.shape
+    x0, y0 = max(0, int(xs.min()) - pad), max(0, int(ys.min()) - pad)
+    x1, y1 = min(w, int(xs.max()) + pad + 1), min(h, int(ys.max()) + pad + 1)
+    crop = mask[y0:y1, x0:x1]
+    hard = crop > 127 if crop.dtype == np.uint8 else crop.astype(bool)
+    radius = fill_radius(hard, diag)
+    paths = [p + np.array([x0, y0], np.float32) for p in hatch(hard, radius, angle, seed)]
+    soft = _soft(hard, grow) if crop.dtype != np.uint8 or grow else crop
+    return ColorRegion(paths, radius, x0, y0, soft, segment)
+
+
+def _chain(regions: list[ColorRegion], start: tuple[float, float]) -> tuple[float, float]:
+    """Order each region's strokes so the pen continues from where it is. Returns the end point."""
+    pen = start
+    for r in regions:
+        if r.paths:
+            r.paths = order_paths(r.paths, pen)
+            pen = (float(r.paths[-1][-1][0]), float(r.paths[-1][-1][1]))
+    return pen
+
+
+def _raster_regions(bgr: np.ndarray, fg: np.ndarray, ink: np.ndarray, labels: np.ndarray,
+                    group_order: list[int], angle: float, seed: int) -> tuple[list[ColorRegion], bool]:
+    """Areas of similar colour that the outline does not cover, in drawing order.
+
+    Returns (regions, colorful). `colorful` is False for black-and-white line
+    art: nothing would change during a colouring pass.
+    """
+    h, w = fg.shape
+    total = w * h
+    k = max(1, int(round(0.0008 * (w + h))))
+    ink_d = cv2.dilate(ink.astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * k + 1, 2 * k + 1)))
+    cand = ((fg > 0.35) & (ink_d == 0)).astype(np.uint8)
+    cand = cv2.morphologyEx(cand, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    n, lab, stats, _ = cv2.connectedComponentsWithStats(cand, connectivity=8)
+    keep = stats[:, cv2.CC_STAT_AREA] >= max(24, int(0.0004 * total))
+    keep[0] = False
+    cand = keep[lab]
+    area = int(cand.sum())
+    if area == 0:
+        return [], False
+    colorful = area >= 0.0015 * total
+
+    # Work on a smaller copy: colour clusters do not need full resolution.
+    s = min(1.0, float(np.sqrt(350_000 / total)))
+    ws, hs = max(8, int(w * s)), max(8, int(h * s))
+    small = cv2.resize(bgr, (ws, hs), interpolation=cv2.INTER_AREA) if s < 1 else bgr
+    cand_s = cv2.resize(cand.astype(np.uint8), (ws, hs), interpolation=cv2.INTER_NEAREST) > 0 if s < 1 else cand
+    if not cand_s.any():
+        cand_s = cv2.resize(cand.astype(np.uint8), (ws, hs), interpolation=cv2.INTER_AREA) > 0
+    lab_img = cv2.cvtColor(cv2.medianBlur(small, 5), cv2.COLOR_BGR2LAB).astype(np.float32)
+    feats = lab_img[cand_s] * np.array([0.5, 1.0, 1.0], np.float32)
+    rng = np.random.default_rng(seed)
+    sample = feats[rng.choice(len(feats), min(len(feats), 20_000), replace=False)] if len(feats) > 20_000 else feats
+    kk = int(min(6, max(1, len(sample) // 50)))
+    if kk > 1:
+        crit = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 15, 0.5)
+        cv2.setRNGSeed(seed)
+        _c, _l, centers = cv2.kmeans(np.ascontiguousarray(sample), kk, None, crit, 2, cv2.KMEANS_PP_CENTERS)
+        merged: list[np.ndarray] = []
+        for c in centers:                       # similar colours are one colour
+            if all(np.linalg.norm(c - m) > 14 for m in merged):
+                merged.append(c)
+        centers = np.array(merged, np.float32)
+    else:
+        centers = feats.mean(axis=0, keepdims=True)
+    d = ((feats[:, None, :] - centers[None, :, :]) ** 2).sum(axis=2)
+    assign = np.full((hs, ws), -1, np.int32)
+    assign[cand_s] = np.argmin(d, axis=1)
+
+    # Connected areas of one colour become regions; tiny ones join their neighbours.
+    reg = np.zeros((hs, ws), np.int32)
+    sizes: list[int] = []
+    min_reg = max(12, int(0.0008 * hs * ws))
+    for c in range(len(centers)):
+        nc, cl, st, _ = cv2.connectedComponentsWithStats((assign == c).astype(np.uint8), connectivity=8)
+        lut = np.zeros(nc, np.int32)
+        for j in range(1, nc):
+            if st[j, cv2.CC_STAT_AREA] >= min_reg:
+                sizes.append(int(st[j, cv2.CC_STAT_AREA]))
+                lut[j] = len(sizes)
+        m = assign == c
+        reg[m] = lut[cl[m]]
+    if not sizes:
+        reg[cand_s] = 1
+        sizes = [int(cand_s.sum())]
+    if len(sizes) > MAX_REGIONS:
+        big = np.argsort(sizes)[::-1][:MAX_REGIONS] + 1
+        lut = np.zeros(len(sizes) + 1, np.int32)
+        lut[big] = np.arange(1, len(big) + 1)
+        reg = lut[reg]
+        sizes = [sizes[i - 1] for i in big]
+
+    # Back to full size; every leftover candidate pixel joins the nearest region.
+    if s < 1:
+        reg = cv2.resize(reg.astype(np.uint16), (w, h), interpolation=cv2.INTER_NEAREST).astype(np.int32)
+    reg[~cand] = 0
+    left = cand & (reg == 0)
+    if left.any() and (reg > 0).any():
+        src = (reg == 0).astype(np.uint8)
+        _dist, near = cv2.distanceTransformWithLabels(src, cv2.DIST_L2, 5, labelType=cv2.DIST_LABEL_PIXEL)
+        kept = reg > 0
+        lut = np.zeros(int(near.max()) + 1, np.int32)
+        lut[near[kept]] = reg[kept]
+        reg[left] = lut[near[left]]
+    rank = {g: i for i, g in enumerate(group_order)}
+    diag = float(np.hypot(w, h))
+    items = []
+    for rid in range(1, len(sizes) + 1):
+        m = reg == rid
+        cnt = int(m.sum())
+        if cnt < 8:
+            continue
+        objs = labels[m]
+        objs = objs[objs > 0]
+        obj = int(np.bincount(objs).argmax()) if len(objs) else 0
+        items.append((rank.get(obj, len(rank)), -cnt, rid, m))
+    items.sort(key=lambda it: (it[0], it[1]))
+    regions = []
+    for i, (_r, _c, _rid, m) in enumerate(items):
+        region = _make_region(m, diag, angle, seed + i, grow=max(1, k))
+        if region is not None:
+            regions.append(region)
+    return regions, colorful
 
 
 # ──────────────────────────────────────────────────────────────
@@ -112,7 +295,7 @@ def _ink_mask(bgr: np.ndarray, fg: np.ndarray) -> np.ndarray:
 
 
 def prepare_raster(path: Path, area: tuple[int, int, int, int], dark: bool,
-                   order: str, start: tuple[float, float]) -> PreparedDrawing:
+                   order: str, start: tuple[float, float], angle: float = 55.0) -> PreparedDrawing:
     img = imread(path)
     if img is None:
         raise ValueError(f"Cannot read image {path}")
@@ -129,32 +312,22 @@ def prepare_raster(path: Path, area: tuple[int, int, int, int], dark: bool,
     line_rgb = full_rgb
     soft_ink = cv2.GaussianBlur(ink.astype(np.float32), (3, 3), 0)
     line_a = np.maximum(soft_ink * fg, ink * fg)
-    if dark:
-        full_rgb = to_chalk(full_rgb)
-        line_rgb = full_rgb
-        line_a = chalk_texture(line_a, seed=w * 31 + h)
-        full_a = np.clip(full_a * 0.92, 0, 1)
 
     gap = max(9, int(0.012 * (w + h)))
     labels, stats = label_objects(ink | (fg > 0.5), gap)
     group_order = order_groups(stats, order)
     local_start = (start[0] - rect[0], start[1] - rect[1])
     strokes = order_strokes(strokes_from_mask(ink, labels), group_order, local_start)
-    color_paths = _color_paths(stats, group_order, w, h)
+    regions, colorful = _raster_regions(bgr, fg, ink, labels, group_order, angle, seed=w * 31 + h)
+    pen = tuple(strokes[-1].points[-1]) if strokes else local_start
+    _chain(regions, pen)
+    if dark:
+        full_rgb = to_chalk(full_rgb)
+        line_rgb = full_rgb
+        line_a = chalk_texture(line_a, seed=w * 31 + h)
+        full_a = np.clip(full_a * 0.92, 0, 1)
     return PreparedDrawing(rect, line_rgb, line_a.astype(np.float32), full_rgb, full_a.astype(np.float32),
-                           strokes, color_paths)
-
-
-def _color_paths(stats: np.ndarray, group_order: list[int], w: int, h: int):
-    """One back-and-forth brush sweep per object (colour only shows where the picture is)."""
-    radius = max(10.0, min(w, h) / 16)
-    paths = []
-    for g in group_order:
-        x, y, bw, bh, area = (int(v) for v in stats[g])
-        if area < 20:
-            continue
-        paths.append((zigzag(x, y, x + bw - 1, y + bh - 1, radius), radius))
-    return paths
+                           strokes, regions, colorful)
 
 
 # ──────────────────────────────────────────────────────────────
@@ -206,8 +379,19 @@ def _sample_subpath(sub, scale: float, ox: float, oy: float, step: float = 3.0) 
     return arr
 
 
+def svg_cues(path: Path) -> list[str]:
+    """Words that start timed parts of an SVG (data-word="..."), in document order. Cheap: no rendering."""
+    import re
+
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    return [m.group(2).strip() for m in re.finditer(r"data-word\s*=\s*([\"'])(.*?)\1", text) if m.group(2).strip()]
+
+
 def prepare_svg(path: Path, area: tuple[int, int, int, int], dark: bool,
-                thickness: float = 1.0) -> PreparedDrawing:
+                thickness: float = 1.0, angle: float = 55.0) -> PreparedDrawing:
     from svgelements import SVG, Path as SvgPath, Shape
 
     svg = SVG.parse(str(path), reify=True)
@@ -223,8 +407,10 @@ def prepare_svg(path: Path, area: tuple[int, int, int, int], dark: bool,
     line = np.zeros((h * ss, w * ss, 3), np.uint8)
     line_a = np.zeros((h * ss, w * ss), np.uint8)
     strokes: list[Stroke] = []
-    fills: list[tuple[np.ndarray, float]] = []
-    fill_radius = max(10.0, min(w, h) / 18)
+    stroke_seg: list[int] = []
+    fills: list[tuple[list[np.ndarray], int]] = []   # (polygons in drawing px, segment)
+    cues: list[str | None] = [None]
+    current: str | None = None
 
     for el in svg.elements():
         if not isinstance(el, Shape):
@@ -236,6 +422,14 @@ def prepare_svg(path: Path, area: tuple[int, int, int, int], dark: bool,
         fill_c = _svg_color(el.fill)
         if stroke_c is None and fill_c is None:
             continue
+        cue = (el.values.get("data-word") or "").strip() or None
+        if cue is not None and cue != current:
+            current = cue
+            if strokes or fills or cues[-1] is not None:
+                cues.append(cue)
+            else:
+                cues[-1] = cue
+        seg_i = len(cues) - 1
         try:
             sw = float(el.implicit_stroke_width if hasattr(el, "implicit_stroke_width") else el.stroke_width)
         except Exception:
@@ -251,10 +445,7 @@ def prepare_svg(path: Path, area: tuple[int, int, int, int], dark: bool,
                 color = tuple(int(c) for c in fill_c[:3])
                 cv2.fillPoly(full, polys, color, lineType=cv2.LINE_AA)
                 cv2.fillPoly(full_a, polys, 255, lineType=cv2.LINE_AA)
-                allp = np.concatenate(subs)
-                x0, y0 = allp.min(axis=0)
-                x1, y1 = allp.max(axis=0)
-                fills.append((zigzag(int(x0), int(y0), int(x1), int(y1), fill_radius), fill_radius))
+                fills.append(([s for s in subs if len(s) >= 3], seg_i))
         if stroke_c is not None:
             color = tuple(int(c) for c in stroke_c[:3])
             t = max(1, int(round(width_px * ss)))
@@ -267,6 +458,7 @@ def prepare_svg(path: Path, area: tuple[int, int, int, int], dark: bool,
                 # Reveal exactly the stroke itself (+AA edge), so crossing strokes do not peek through.
                 r = np.full(len(s), width_px / 2 + 0.8, dtype=np.float32)
                 strokes.append(Stroke(s.astype(np.float32), r))
+                stroke_seg.append(seg_i)
 
     def down(img):
         return cv2.resize(img, (w, h), interpolation=cv2.INTER_AREA)
@@ -280,11 +472,48 @@ def prepare_svg(path: Path, area: tuple[int, int, int, int], dark: bool,
     line_rgb = line_rgb / np.maximum(la[..., None], 1e-3)
     full_rgb = np.clip(full_rgb, 0, 255)
     line_rgb = np.clip(line_rgb, 0, 255)
+
+    # Each fill is coloured where it is still visible (later shapes cover earlier ones).
+    diag = float(np.hypot(w, h))
+    covered = np.zeros((h, w), np.uint8)
+    visible: list[tuple[np.ndarray, int]] = []
+    for polys, seg_i in reversed(fills):
+        m = np.zeros((h * ss, w * ss), np.uint8)
+        cv2.fillPoly(m, [np.round(p * ss).astype(np.int32) for p in polys], 255, lineType=cv2.LINE_AA)
+        m = down(m)
+        vis = cv2.multiply(m, 255 - covered, scale=1 / 255)
+        np.maximum(covered, m, out=covered)
+        visible.append((vis, seg_i))
+    visible.reverse()
+    regions: list[ColorRegion] = []
+    min_area = max(6, int(0.00002 * w * h))
+    for i, (vis, seg_i) in enumerate(visible):
+        hard = vis > 127
+        if int(hard.sum()) < min_area:
+            continue
+        region = _make_region(hard, diag, angle, seed=w * 17 + h + i, segment=seg_i)
+        if region is not None:
+            regions.append(region)
+
+    segments: list[Segment] = []
+    if len(cues) > 1 or cues[0] is not None:
+        for si, cue in enumerate(cues):
+            s_idx = [k for k, s in enumerate(stroke_seg) if s == si]
+            r_idx = [k for k, r in enumerate(regions) if r.segment == si]
+            s_rng = (s_idx[0], s_idx[-1] + 1) if s_idx else (len([s for s in stroke_seg if s < si]),) * 2
+            r_rng = (r_idx[0], r_idx[-1] + 1) if r_idx else (len([r for r in regions if r.segment < si]),) * 2
+            segments.append(Segment(cue, s_rng, r_rng))
+    # Colouring of each part starts where that part's outline ended.
+    for seg in (segments or [Segment(None, (0, len(strokes)), (0, len(regions)))]):
+        a, b = seg.strokes
+        pen = tuple(strokes[b - 1].points[-1]) if b > a else (w / 2, h / 2)
+        _chain(regions[seg.regions[0]:seg.regions[1]], pen)
+
     if dark:
         full_rgb = to_chalk(full_rgb)
         line_rgb = to_chalk(line_rgb)
         la = chalk_texture(la, seed=w * 17 + h)
-    return PreparedDrawing(rect, line_rgb, la, full_rgb, fa, strokes, fills)
+    return PreparedDrawing(rect, line_rgb, la, full_rgb, fa, strokes, regions, bool(regions), segments)
 
 
 # ──────────────────────────────────────────────────────────────
@@ -301,15 +530,18 @@ def prepare(path: Path, area: tuple[int, int, int, int], settings: dict, dark: b
     order = settings.get("stroke_order", "auto")
     if order == "auto":
         order = "right_to_left" if language == "fa" else "left_to_right"
+    # Marker strokes lean like a right hand's ("/"), or the other way for a left hand.
+    angle = 125.0 if settings.get("hand_mirror") else 55.0
     if path.suffix.lower() == ".svg":
-        d = prepare_svg(path, area, dark, float(settings.get("line_thickness", 1.0)))
+        d = prepare_svg(path, area, dark, float(settings.get("line_thickness", 1.0)), angle)
     else:
         # The pen starts from the corner where reading starts.
         start = (area[2], area[1]) if order == "right_to_left" else (area[0], area[1])
-        d = prepare_raster(path, area, dark, order, start)
-    # Strokes and sweeps in frame coordinates are easier for the compositor.
-    x0, y0 = d.rect[0], d.rect[1]
+        d = prepare_raster(path, area, dark, order, start, angle)
+    # Strokes and marker paths in frame coordinates are easier for the compositor.
+    off = np.array([d.rect[0], d.rect[1]], dtype=np.float32)
     for st in d.strokes:
-        st.points = st.points + np.array([x0, y0], dtype=np.float32)
-    d.color_paths = [(p + np.array([x0, y0], dtype=np.float32), r) for p, r in d.color_paths]
+        st.points = st.points + off
+    for r in d.regions:
+        r.paths = [p + off for p in r.paths]
     return d

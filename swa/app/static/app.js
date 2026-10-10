@@ -239,25 +239,48 @@ async function viewProject(slug, tab) {
   for (const j of p.jobs || []) if (j.status === "running") watchJob(j, body.querySelector(".jobslot"));
 }
 
-/* One click: sync (if needed) then render. */
+/* One click: sync (if needed), let Claude draw missing scenes (Claude mode), then render. */
 async function oneClick(slug) {
   const p = state.project;
+  const enc = encodeURIComponent(slug);
+  const claudeMode = p.settings.engine === "claude" && state.info && state.info.claude;
   if (!p.narration) return toast(t("msg.needNarration"), "error");
   if (!p.lines) return toast(t("msg.needScript"), "error");
-  if (!p.images && p.settings.text_lines !== "write") return toast(t("msg.needImages"), "error");
-  location.hash = `#/p/${encodeURIComponent(slug)}/export`;
+  if (!p.images && p.settings.text_lines !== "write" && !claudeMode) return toast(t("msg.needImages"), "error");
+  location.hash = `#/p/${enc}/export`;
   await new Promise((r) => setTimeout(r, 150));
   try {
     if (!p.aligned) {
       const method = state.info.whisper.length ? "whisper" : "estimate";
       if (method === "estimate") toast(t("msg.estimating"));
-      const job = await api(`/api/projects/${encodeURIComponent(slug)}/align`, { method: "POST", json: { method } });
+      const job = await api(`/api/projects/${enc}/align`, { method: "POST", json: { method } });
       const res = await watchJob(job, document.querySelector(".jobslot"));
       if (res.status !== "done") return;
     }
-    const job = await api(`/api/projects/${encodeURIComponent(slug)}/render`, { method: "POST", json: {} });
+    if (claudeMode && p.missing_images.length) {
+      const job = await api(`/api/projects/${enc}/claude`, { method: "POST", json: {} });
+      const res = await watchJob(job, document.querySelector(".jobslot"));
+      if (res.status !== "done") return;
+    }
+    const job = await api(`/api/projects/${enc}/render`, { method: "POST", json: {} });
     await watchJob(job, document.querySelector(".jobslot"), true);
   } catch (e) { fail(e); }
+}
+
+/* What a running job is doing, in the interface language when the server says which step it is on. */
+function jobText(j) {
+  const info = j.info || {};
+  if (j.kind === "claude" && info.step) {
+    return t("cl.step." + info.step) + (info.line ? ` #${info.line}` : "") +
+      (info.total ? ` · ${info.drawn || 0}/${info.total}` : "");
+  }
+  return j.message || "";
+}
+
+function jobError(j) {
+  const code = (j.info || {}).code;
+  const key = code ? "cl.err." + code : null;
+  return key && t(key) !== key ? t(key) : j.error;
 }
 
 function watchJob(job, slot, reloadOnDone = true) {
@@ -276,14 +299,16 @@ function watchJob(job, slot, reloadOnDone = true) {
       try { j = await api(`/api/jobs/${job.id}`); } catch (e) { return; }
       bar.style.width = `${(j.progress * 100).toFixed(1)}%`;
       pct.textContent = `${Math.round(j.progress * 100)}%`;
-      msg.textContent = j.message || "";
+      msg.textContent = jobText(j);
       if (j.info && j.info.eta !== undefined && j.status === "running") eta.textContent = `${t("job.eta")} ${fmtTime(j.info.eta)}`;
       if (j.status !== "running") {
         clearInterval(state.polling[job.id]);
         delete state.polling[job.id];
         if (j.status === "done") toast(t("job.done." + job.kind), "ok");
+        if (j.status === "done" && job.kind === "claude" && j.result && (j.result.missing || []).length)
+          toast(`${t("cl.notDrawn")}: ${j.result.missing.map((n) => "#" + n).join(", ")}`, "error");
         else if (j.status === "cancelled") toast(t("job.cancelled"));
-        else toast(`${t("job.failed")}: ${j.error}`, "error");
+        else toast(`${t("job.failed")}: ${jobError(j)}`, "error");
         resolve(j);
         if (reloadOnDone && j.status === "done" && !(j.result && j.result.preview)) route();
         else if (j.status !== "done") slot.replaceChildren();
@@ -345,8 +370,97 @@ async function tabContent(body, p) {
 }
 
 /* ── tab 2: images ───────────────────────────────────── */
+const CLIP_RE = /\.(mp4|webm|mov|m4v)$/i;
+
+/* Colouring for one picture: auto → off → on → auto. */
+function colorChip(p, ln) {
+  const enc = encodeURIComponent(p.slug);
+  const btn = h("button", { type: "button", class: "chip" });
+  const draw = () => {
+    const cur = ((p.line_options || {})[String(ln.id)] || {}).coloring || "auto";
+    btn.className = "chip " + cur;
+    btn.textContent = "🎨 " + t("i.color." + cur);
+    btn.title = t("i.colorTitle");
+  };
+  btn.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    const cur = ((p.line_options || {})[String(ln.id)] || {}).coloring || "auto";
+    const next = { auto: "off", off: "on", on: "auto" }[cur];
+    try {
+      const r = await api(`/api/projects/${enc}/lines/${ln.id}`, { method: "PUT", json: { coloring: next } });
+      p.line_options = r.line_options;
+      draw();
+    } catch (err) { fail(err); }
+  });
+  draw();
+  return btn;
+}
+
+function copyText(text) {
+  const done = () => toast(t("cl.copied"), "ok");
+  if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text).then(done, fail);
+  const ta = h("textarea", { style: { position: "fixed", opacity: "0" } });
+  ta.value = text;
+  document.body.append(ta);
+  ta.select();
+  try { document.execCommand("copy"); done(); } catch (e) { fail(e); }
+  ta.remove();
+}
+
+/* Claude draws the scenes: the author's brief, the button that runs Claude Code, or what to paste by hand. */
+function claudePanel(p, slot, run) {
+  const enc = encodeURIComponent(p.slug);
+  const brief = h("textarea", { class: "brief", dir: "auto", placeholder: t("cl.briefPh"), spellcheck: "false" });
+  brief.value = p.settings.claude_brief || "";
+  const status = h("span", { class: "small faint" }, "");
+  const save = debounce(async () => {
+    try { await api(`/api/projects/${enc}/settings`, { method: "PUT", json: { claude_brief: brief.value } }); status.textContent = t("msg.saved"); }
+    catch (e) { fail(e); }
+  }, 700);
+  brief.addEventListener("input", () => { status.textContent = t("msg.saving"); save(); });
+  const missing = p.missing_images.length;
+  const actions = state.info && state.info.claude
+    ? h("div", { class: "row" },
+        h("button", { class: "btn primary", disabled: missing ? null : true, onclick: () => run(null, false) },
+          icon("sparkle"), missing ? `${t("cl.drawMissing")} (${missing})` : t("cl.allDrawn")),
+        p.images ? h("button", { class: "btn ghost", onclick: async () => {
+          if (await confirmModal(t("cl.redoAllConfirm"))) run(null, true);
+        } }, icon("refresh"), t("cl.redoAll")) : null)
+    : h("p", { class: "tip small" }, t("cl.noCli"));
+  return h("div", { class: "card stack" },
+    h("div", {}, h("h2", {}, t("cl.title")), h("p", { class: "muted small" }, t("cl.hint"))),
+    h("label", { class: "field" }, t("cl.brief"), brief), status,
+    actions, slot,
+    h("details", { class: "small" },
+      h("summary", { class: "muted" }, t("cl.manualTitle")),
+      h("div", { class: "stack", style: { gap: "8px", marginTop: "8px" } },
+        h("p", { class: "muted" }, t("cl.manual")),
+        h("div", { class: "cmd" }, h("code", { dir: "ltr" }, p.claude_prompt),
+          h("button", { class: "btn ghost small", onclick: () => copyText(p.claude_prompt) }, t("cl.copy"))),
+        h("p", { class: "faint" }, t("cl.clips")))));
+}
+
 async function tabImages(body, p) {
   const enc = encodeURIComponent(p.slug);
+  const engine = p.settings.engine === "claude" ? "claude" : "images";
+  const claudeOn = engine === "claude" && state.info && state.info.claude;
+  const slot = h("div", { class: "jobslot" });
+  const setEngine = async (v) => {
+    if (v === engine) return;
+    try { await api(`/api/projects/${enc}/settings`, { method: "PUT", json: { engine: v } }); route(); } catch (e) { fail(e); }
+  };
+  const runClaude = async (lines, redo) => {
+    try {
+      const job = await api(`/api/projects/${enc}/claude`, { method: "POST", json: { lines, redo } });
+      watchJob(job, slot);
+    } catch (e) { fail(e); }
+  };
+  const source = h("div", { class: "methods two" },
+    h("div", { class: "method" + (engine === "images" ? " on" : ""), onclick: () => setEngine("images") },
+      h("b", {}, t("src.images")), h("p", {}, t("src.imagesHint"))),
+    h("div", { class: "method" + (engine === "claude" ? " on" : ""), onclick: () => setEngine("claude") },
+      h("b", {}, t("src.claude")), h("p", {}, t("src.claudeHint"))));
+
   let replace = false;
   const upload = async (files) => {
     const fd = new FormData();
@@ -365,13 +479,21 @@ async function tabImages(body, p) {
   const cards = p.parsed.map((ln) => {
     const name = imgs[String(ln.id)];
     if (!name) {
-      const asText = p.settings.text_lines === "write";
-      return h("div", { class: "icard missing" + (asText ? " as-text" : "") }, h("div", { class: "pic" }, asText ? t("i.asText") : `${t("i.missing")} #${ln.id}`),
-        h("div", { class: "meta" }, h("span", { class: "num" }, ln.id), h("span", { class: "txt", dir: "auto" }, ln.text)));
+      const label = engine === "claude" ? t("i.byClaude") : p.settings.text_lines === "write" ? t("i.asText") : `${t("i.missing")} #${ln.id}`;
+      const asText = engine === "claude" || p.settings.text_lines === "write";
+      return h("div", { class: "icard missing" + (asText ? " as-text" : "") }, h("div", { class: "pic" }, label),
+        h("div", { class: "meta" }, h("span", { class: "num" }, ln.id), h("span", { class: "txt", dir: "auto" }, ln.text)),
+        claudeOn ? h("button", { class: "iconbtn redo", title: t("cl.drawThis"), html: ICONS.sparkle, onclick: () => runClaude([ln.id], false) }) : null);
     }
+    const clip = CLIP_RE.test(name);
     return h("div", { class: "icard" },
-      h("div", { class: "pic" }, h("img", { src: `/api/projects/${enc}/images/${encodeURIComponent(name)}?thumb=1`, loading: "lazy", alt: name })),
+      h("div", { class: "pic" }, h("img", { src: `/api/projects/${enc}/images/${encodeURIComponent(name)}?thumb=1`, loading: "lazy", alt: name }),
+        clip ? h("span", { class: "clipmark" }, "▶ " + t("i.clip")) : null),
       h("div", { class: "meta" }, h("span", { class: "num" }, ln.id), h("span", { class: "txt", dir: "auto", title: ln.text }, ln.text)),
+      h("div", { class: "foot" }, clip ? h("span", {}) : colorChip(p, ln),
+        claudeOn ? h("button", { class: "iconbtn", title: t("cl.redoThis"), html: ICONS.refresh, onclick: async () => {
+          if (await confirmModal(t("cl.redoThisConfirm"))) runClaude([ln.id], true);
+        } }) : null),
       h("button", { class: "iconbtn x", title: t("w.delete"), html: ICONS.x, onclick: async () => {
         await api(`/api/projects/${enc}/images/${encodeURIComponent(name)}`, { method: "DELETE" }).catch(fail); route();
       } }));
@@ -379,21 +501,25 @@ async function tabImages(body, p) {
   const extra = p.extra_images.length ? h("p", { class: "small", style: { color: "var(--warn)" } },
     `${t("i.extra")}: ${p.extra_images.map((n) => "#" + n).join(", ")}`) : null;
   const warns = (p.warnings || []).map((w) => h("p", { class: "small", style: { color: "var(--warn)" } }, w));
+  const uploadCard = h("div", { class: "card stack" },
+    h("div", {}, h("h2", {}, t("i.title")), h("p", { class: "muted small" }, t("i.hint"))),
+    dropzone(t("i.drop"), "PNG · JPG · WebP · SVG · ZIP · MP4/WebM", "image/*,.svg,.zip,video/*", true, upload),
+    h("div", { class: "row spread" }, replaceToggle,
+      h("div", { class: "row" },
+        h("span", { class: "badge " + (!p.missing_images.length ? "ok" : p.settings.text_lines === "write" ? "" : "warn") },
+          !p.missing_images.length ? t("i.allGood") : p.settings.text_lines === "write"
+            ? `${p.missing_images.length} ${t("i.textCount")}` : `${p.missing_images.length} ${t("i.missingCount")}`),
+        p.images ? h("button", { class: "btn ghost danger", onclick: async () => {
+          if (!(await confirmModal(t("i.clearConfirm")))) return;
+          await api(`/api/projects/${enc}/images`, { method: "DELETE" }).catch(fail); route();
+        } }, t("i.clear")) : null)),
+    extra, warns);
   body.replaceChildren(h("div", { class: "stack" },
-    h("div", { class: "card stack" },
-      h("div", {}, h("h2", {}, t("i.title")), h("p", { class: "muted small" }, t("i.hint"))),
-      dropzone(t("i.drop"), "PNG · JPG · WebP · SVG · ZIP", "image/*,.svg,.zip", true, upload),
-      h("div", { class: "row spread" }, replaceToggle,
-        h("div", { class: "row" },
-          h("span", { class: "badge " + (!p.missing_images.length ? "ok" : p.settings.text_lines === "write" ? "" : "warn") },
-            !p.missing_images.length ? t("i.allGood") : p.settings.text_lines === "write"
-              ? `${p.missing_images.length} ${t("i.textCount")}` : `${p.missing_images.length} ${t("i.missingCount")}`),
-          p.images ? h("button", { class: "btn ghost danger", onclick: async () => {
-            if (!(await confirmModal(t("i.clearConfirm")))) return;
-            await api(`/api/projects/${enc}/images`, { method: "DELETE" }).catch(fail); route();
-          } }, t("i.clear")) : null)),
-      extra, warns),
+    h("div", { class: "card stack" }, h("div", {}, h("h2", {}, t("src.title")), h("p", { class: "muted small" }, t("src.hint"))), source),
+    engine === "claude" ? claudePanel(p, slot, runClaude) : uploadCard,
     p.parsed.length ? h("div", { class: "imgs" }, cards) : h("div", { class: "card empty" }, t("i.noScript")),
+    engine === "claude" ? h("details", { class: "card small" }, h("summary", { class: "muted" }, t("cl.ownImages")),
+      h("div", { style: { marginTop: "12px" } }, dropzone(t("i.drop"), "PNG · JPG · WebP · SVG · ZIP · MP4/WebM", "image/*,.svg,.zip,video/*", true, upload))) : null,
     h("div", { class: "row", style: { justifyContent: "flex-end" } }, h("a", { class: "btn primary", href: `#/p/${enc}/style` }, t("w.next")))));
 }
 
@@ -505,6 +631,9 @@ async function tabStyle(body, p) {
       setting(t("s.capColor"), t("s.capColorHint"), colorInput("caption_color"))),
     h("div", { class: "card" }, h("h3", {}, t("s.drawing")),
       setting(t("s.colorMode"), t("s.colorModeHint"), seg("color_mode", [["ink_then_color", t("s.inkThenColor")], ["color_strokes", t("s.colorStrokes")], ["ink_only", t("s.inkOnly")]])),
+      setting(t("s.coloring"), t("s.coloringHint"), seg("coloring", [["auto", t("s.auto")], ["on", t("s.always")], ["off", t("s.never")]])),
+      setting(t("s.shortLines"), t("s.shortLinesHint"), seg("short_lines", [["show", t("s.showPicture")], ["text", t("s.showText")], ["draw", t("s.drawAnyway")]])),
+      setting(t("s.shortThreshold"), t("s.shortThresholdHint"), slider("short_threshold", 1, 6, 0.5, (v) => `${(+v).toFixed(1)}s`)),
       setting(t("s.sync"), t("s.syncHint"), seg("sync_mode", [["speech", t("s.speech")], ["linear", t("s.linear")]])),
       setting(t("s.drawFill"), t("s.drawFillHint"), slider("draw_fill", 0.3, 1, 0.05, pct)),
       setting(t("s.inkShare"), t("s.inkShareHint"), slider("ink_share", 0.3, 0.95, 0.05, pct)),
@@ -513,7 +642,7 @@ async function tabStyle(body, p) {
       setting(t("s.margin"), null, slider("image_margin", 0, 0.2, 0.01, pct)),
       setting(t("s.thickness"), t("s.thicknessHint"), slider("line_thickness", 0.5, 2.5, 0.1, (v) => `×${(+v).toFixed(1)}`))),
     h("div", { class: "card" }, h("h3", {}, t("s.transition")),
-      setting(t("s.transitionType"), null, seg("transition", [["slide", t("s.slide")], ["fade", t("s.fade")], ["wipe", t("s.wipe")], ["cut", t("s.cut")]])),
+      setting(t("s.transitionType"), t("s.transitionHint"), seg("transition", [["slide", t("s.slide")], ["fade", t("s.fade")], ["wipe", t("s.wipe")], ["zoom", t("s.zoom")], ["cut", t("s.cut")], ["mix", t("s.mix")]])),
       setting(t("s.transitionDur"), null, slider("transition_duration", 0.2, 1.5, 0.05, (v) => `${(+v).toFixed(2)}s`))),
     h("div", { class: "card" }, h("h3", {}, t("s.video")),
       setting(t("s.aspect"), null, seg("aspect", [["16:9", "16:9 YouTube"], ["9:16", "9:16 Shorts"], ["1:1", "1:1"], ["4:5", "4:5"]])),
@@ -641,6 +770,9 @@ async function tabSync(body, p) {
     const edits = {};
     const imgs = p.image_files;
     const previewSlot = h("div", { class: "jobslot" });
+    const order = [...tl.lines].sort((a, b) => a.start - b.start);
+    const quick = new Set(p.settings.short_lines === "draw" ? [] : order.filter((ln, i) =>
+      ((i + 1 < order.length ? order[i + 1].start : tl.duration + (+p.settings.tail || 0.6)) - ln.start) < +p.settings.short_threshold).map((ln) => ln.id));
     const previewVideo = h("div", {});
     const rows = tl.lines.map((ln) => {
       const s = h("input", { type: "number", step: "0.05", value: ln.start.toFixed(2), onchange: (e) => { (edits[ln.id] ||= { id: ln.id, start: ln.start, end: ln.end }).start = +e.target.value; } });
@@ -649,7 +781,8 @@ async function tabSync(body, p) {
       const tr = h("tr", {},
         h("td", {}, h("b", {}, ln.id)),
         h("td", {}, name ? h("img", { src: `/api/projects/${enc}/images/${encodeURIComponent(name)}?thumb=1`, loading: "lazy" }) : h("span", { class: "faint small" }, "—")),
-        h("td", { dir: "auto", style: { maxWidth: "420px" } }, ln.text),
+        h("td", { dir: "auto", style: { maxWidth: "420px" } }, ln.text,
+          quick.has(ln.id) ? h("span", { class: "badge quick", title: t("y.quickHint") }, t(p.settings.short_lines === "text" ? "y.quickText" : "y.quick")) : null),
         h("td", {}, s), h("td", {}, e2),
         h("td", {}, h("div", { class: "row", style: { gap: "6px", flexWrap: "nowrap" } },
           h("button", { class: "iconbtn", title: t("y.play"), html: ICONS.play, onclick: () => {
@@ -699,8 +832,10 @@ async function tabExport(body, p) {
   const problems = [];
   if (!p.narration) problems.push(t("msg.needNarration"));
   if (!p.lines) problems.push(t("msg.needScript"));
-  if (!p.images && p.settings.text_lines !== "write") problems.push(t("msg.needImages"));
-  if (p.missing_images.length && p.settings.text_lines !== "write") problems.push(`${p.missing_images.length} ${t("i.missingCount")} (${t("e.missingOk")})`);
+  const claudeMode = s.engine === "claude";
+  if (!p.images && p.settings.text_lines !== "write" && !claudeMode) problems.push(t("msg.needImages"));
+  if (claudeMode && p.missing_images.length) problems.push(`${p.missing_images.length} ${t((state.info || {}).claude ? "e.claudeWillDraw" : "e.claudeMissing")}`);
+  else if (p.missing_images.length && p.settings.text_lines !== "write") problems.push(`${p.missing_images.length} ${t("i.missingCount")} (${t("e.missingOk")})`);
   if (!p.aligned) problems.push(t("e.notSynced"));
   const render = async () => {
     try {

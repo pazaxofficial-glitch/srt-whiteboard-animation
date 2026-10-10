@@ -75,7 +75,7 @@ const I18N = {
     "c.parsed": "Detected lines",
 
     "i.title": "Images",
-    "i.hint": "Name each image with its line number: 1.png, 2.jpg, 058.png… Upload them all at once, or as a ZIP. SVG line art is drawn stroke by stroke.",
+    "i.hint": "Name each image with its line number: 1.png, 2.jpg, 058.png… Upload them all at once, or as a ZIP. SVG line art is drawn stroke by stroke; a video clip (MP4/WebM) plays instead of being drawn.",
     "i.drop": "Drop images or a ZIP here, or click to choose",
     "i.replace": "Replace all existing images",
     "i.noImage": "no image",
@@ -268,6 +268,68 @@ const I18N = {
     "music.focus": "Focus",
     "music.focus.hint": "Lo-fi electric piano, 84 BPM",
 
+    "src.title": "Pictures",
+    "src.hint": "Where the picture for each line comes from. Board, hand, captions and sound stay the same either way.",
+    "src.images": "🖼 I upload images",
+    "src.imagesHint": "One image per line, named by its number: 1.png, 2.svg… PNG, JPG, WebP, SVG or a video clip.",
+    "src.claude": "✦ Claude draws them",
+    "src.claudeHint": "No images needed. Claude Code reads your script and draws every line as a whiteboard sketch, timed to the words.",
+    "cl.title": "Claude draws the scenes",
+    "cl.hint": "Claude Code, on this computer and with your Claude account, draws each line as clean line art for the hand to follow, and times every object to the word that mentions it.",
+    "cl.brief": "Your instructions for Claude (optional)",
+    "cl.briefPh": "e.g. One main character: a Spartan soldier with a red crest. Simple stick figures, warm colours, no text.",
+    "cl.drawMissing": "Draw with Claude",
+    "cl.allDrawn": "Every line has a scene",
+    "cl.redoAll": "Redraw all",
+    "cl.redoAllConfirm": "Let Claude redraw every scene? The current pictures are kept in images/.replaced.",
+    "cl.noCli": "Claude Code was not found on this computer. Install it from claude.com/claude-code, sign in, then restart this app. Or do it by hand (below).",
+    "cl.manualTitle": "Do it in Claude Code yourself",
+    "cl.manual": "Open this app's folder in Claude Code and paste:",
+    "cl.copy": "Copy",
+    "cl.copied": "Copied",
+    "cl.clips": "Need motion for a line (a chart that grows, a number that counts)? Ask Claude Code, e.g. “Make line 12 an animated clip with HyperFrames”. Clips (MP4/WebM) play on the board instead of being drawn.",
+    "cl.drawThis": "Let Claude draw this line",
+    "cl.redoThis": "Redraw with Claude",
+    "cl.redoThisConfirm": "Let Claude redraw this scene? The current picture is kept in images/.replaced.",
+    "cl.ownImages": "Use your own image for some lines",
+    "cl.step.starting": "Starting Claude Code…",
+    "cl.step.reading": "Claude is reading the script",
+    "cl.step.drawing": "Claude is drawing line",
+    "cl.step.checking": "Claude is checking the drawings",
+    "cl.step.reviewing": "Claude is looking at the drawings",
+    "cl.step.done": "Done",
+    "cl.err.login": "Claude Code is not signed in. Open a terminal, run claude once and sign in.",
+    "cl.err.missing": "Claude Code was not found on this computer.",
+    "cl.err.limit": "Your Claude usage limit is reached. Try again later.",
+    "cl.notDrawn": "Claude did not draw these lines (try again or redraw them one by one)",
+    "job.claude": "Claude",
+    "job.done.claude": "Claude finished drawing",
+    "i.byClaude": "Claude will draw this",
+    "i.clip": "clip",
+    "i.colorTitle": "Colouring for this picture: auto (only if it has colour) → off → always",
+    "i.color.auto": "auto",
+    "i.color.on": "colour",
+    "i.color.off": "no colour",
+    "s.coloring": "Colour in",
+    "s.coloringHint": "Auto: only pictures that have colour. Black-and-white drawings are just drawn",
+    "s.always": "Always",
+    "s.never": "Never",
+    "s.shortLines": "Short lines",
+    "s.shortLinesHint": "Too short to draw: the picture, or the text, simply appears without the hand",
+    "s.showPicture": "Show picture",
+    "s.showText": "Show text",
+    "s.drawAnyway": "Draw anyway",
+    "s.shortThreshold": "Shorter than",
+    "s.shortThresholdHint": "Time until the next line starts",
+    "s.zoom": "Zoom",
+    "s.mix": "Mix",
+    "s.transitionHint": "Mix: a different transition for every board",
+    "y.quick": "appears",
+    "y.quickText": "text",
+    "y.quickHint": "Too short to draw: shown without the hand (Style → Short lines)",
+    "e.claudeWillDraw": "lines have no scene yet: Make video lets Claude draw them first",
+    "e.claudeMissing": "lines have no scene yet (Claude Code not found): they are written as text",
+
     "help.html": `
       <h1>Guide</h1>
       <h2>Make a video in 5 steps</h2>
@@ -296,8 +358,15 @@ const I18N = {
         <li>Transparent PNGs work too. Busy photos are drawn as a whole.</li>
         <li><b>SVG</b> line art is drawn exactly along its paths, stroke by stroke.</li>
       </ul>
-      <h2>No image generator? Let Claude Code draw</h2>
-      <p>Open the project folder in Claude Code and ask: <code>Draw the images for this project</code>. It reads <code>script.txt</code> and writes one SVG drawing per line into <code>images/</code> following the style guide in this app's <code>CLAUDE.md</code>.</p>
+      <h2>No images? Let Claude draw</h2>
+      <p>In <b>Images</b>, choose <b>Claude draws them</b>, write a short brief (style, characters, colours) and press <b>Draw with Claude</b>. Claude Code, installed on this computer and signed in to your Claude account, draws every line as an SVG scene and times each object to the word that mentions it. Board, hand, captions and sound stay as they are. Redraw any scene, or replace it with your own image.</p>
+      <p>Or open this app's folder in Claude Code and type <code>Draw the scenes for the project "my-video"</code>. For a line that needs motion, ask for an animated clip made with HyperFrames or Remotion: clips (MP4/WebM) play on the board.</p>
+      <h2>Colour, short lines, transitions</h2>
+      <ul>
+        <li><b>Style → Colour in → Auto</b> colours in only pictures that have colour; black-and-white drawings are just drawn. The 🎨 chip on a picture in <b>Images</b> changes it for that picture.</li>
+        <li><b>Style → Short lines</b>: a line shorter than 3 seconds (adjustable) is not drawn; its picture, or its text, appears without the hand.</li>
+        <li><b>Transition → Mix</b> picks a different transition for every board.</li>
+      </ul>
       <h2>Command line</h2>
       <pre class="code">python -m swa align "my-video"
 python -m swa render "my-video" --line 12 --draft
@@ -379,7 +448,7 @@ python -m swa render "my-video"</pre>
     "c.parsed": "خط‌های شناسایی‌شده",
 
     "i.title": "تصویرها",
-    "i.hint": "اسم هر تصویر را شماره‌ی خطش بگذارید: 1.png، 2.jpg، 058.png… همه را یک‌جا یا به‌صورت ZIP آپلود کنید. طرح‌های SVG خط به خط کشیده می‌شوند.",
+    "i.hint": "اسم هر تصویر را شماره‌ی خطش بگذارید: \u20661.png, 2.jpg, 058.png…\u2069 همه را یک‌جا یا به‌صورت ZIP آپلود کنید. طرح‌های SVG خط به خط کشیده می‌شوند و کلیپ ویدیویی (MP4/WebM) به‌جای کشیدن پخش می‌شود.",
     "i.drop": "تصویرها یا فایل ZIP را اینجا بکشید یا کلیک کنید",
     "i.replace": "جایگزینی همه‌ی تصویرهای قبلی",
     "i.noImage": "بدون تصویر",
@@ -572,6 +641,68 @@ python -m swa render "my-video"</pre>
     "music.focus": "تمرکز",
     "music.focus.hint": "پیانوی الکتریک لوفای، ۸۴ ضرب",
 
+    "src.title": "تصویرها",
+    "src.hint": "تصویر هر خط از کجا بیاید. تخته، دست، زیرنویس و صدا در هر دو حالت همان است.",
+    "src.images": "🖼 خودم تصویر آپلود می‌کنم",
+    "src.imagesHint": "برای هر خط یک تصویر با شماره‌ی همان خط: \u20661.png, 2.svg…\u2069 (PNG، JPG، WebP، SVG یا کلیپ ویدیویی).",
+    "src.claude": "✦ کلاد می‌کشد",
+    "src.claudeHint": "نیازی به تصویر نیست. Claude Code اسکریپت را می‌خواند و هر خط را به‌صورت طرح وایت‌بردی می‌کشد، هم‌زمان با کلمه‌ها.",
+    "cl.title": "کلاد صحنه‌ها را می‌کشد",
+    "cl.hint": "Claude Code، روی همین کامپیوتر و با حساب Claude خودتان، هر خط را به‌صورت طرح خطی تمیز می‌کشد تا دست روی آن حرکت کند، و هر چیز را دقیقاً با کلمه‌ای که از آن نام می‌برد هم‌زمان می‌کند.",
+    "cl.brief": "دستور شما به کلاد (اختیاری)",
+    "cl.briefPh": "مثلاً: یک شخصیت اصلی، سرباز اسپارتی با کلاهخود پر قرمز. آدمک‌های ساده، رنگ‌های گرم، بدون متن.",
+    "cl.drawMissing": "کشیدن با کلاد",
+    "cl.allDrawn": "همه‌ی خط‌ها صحنه دارند",
+    "cl.redoAll": "کشیدن دوباره‌ی همه",
+    "cl.redoAllConfirm": "کلاد همه‌ی صحنه‌ها را دوباره بکشد؟ تصویرهای فعلی در پوشه‌ی images/.replaced نگه داشته می‌شوند.",
+    "cl.noCli": "Claude Code روی این کامپیوتر پیدا نشد. آن را از claude.com/claude-code نصب کنید، وارد حساب شوید و برنامه را دوباره باز کنید. یا خودتان از راه پایین انجامش دهید.",
+    "cl.manualTitle": "انجامش در Claude Code به دست خودتان",
+    "cl.manual": "پوشه‌ی این برنامه را در Claude Code باز کنید و این را بچسبانید:",
+    "cl.copy": "کپی",
+    "cl.copied": "کپی شد",
+    "cl.clips": "برای یک خط حرکت لازم دارید (نموداری که رشد می‌کند، عددی که می‌شمارد)؟ از Claude Code بخواهید، مثلاً «خط ۱۲ را با HyperFrames به کلیپ متحرک تبدیل کن». کلیپ‌ها (MP4/WebM) به‌جای کشیده‌شدن روی تخته پخش می‌شوند.",
+    "cl.drawThis": "کلاد این خط را بکشد",
+    "cl.redoThis": "کشیدن دوباره با کلاد",
+    "cl.redoThisConfirm": "کلاد این صحنه را دوباره بکشد؟ تصویر فعلی در پوشه‌ی images/.replaced نگه داشته می‌شود.",
+    "cl.ownImages": "استفاده از تصویر خودتان برای بعضی خط‌ها",
+    "cl.step.starting": "در حال اجرای Claude Code…",
+    "cl.step.reading": "کلاد دارد اسکریپت را می‌خواند",
+    "cl.step.drawing": "کلاد دارد این خط را می‌کشد:",
+    "cl.step.checking": "کلاد دارد طرح‌ها را بررسی می‌کند",
+    "cl.step.reviewing": "کلاد دارد طرح‌ها را نگاه می‌کند",
+    "cl.step.done": "تمام شد",
+    "cl.err.login": "Claude Code وارد حساب نشده است. یک ترمینال باز کنید، یک بار claude را اجرا کنید و وارد شوید.",
+    "cl.err.missing": "Claude Code روی این کامپیوتر پیدا نشد.",
+    "cl.err.limit": "سقف استفاده‌ی Claude شما پر شده است. کمی بعد دوباره امتحان کنید.",
+    "cl.notDrawn": "کلاد این خط‌ها را نکشید (دوباره امتحان کنید یا تک‌تک بکشید)",
+    "job.claude": "کلاد",
+    "job.done.claude": "کلاد کشیدن را تمام کرد",
+    "i.byClaude": "کلاد این را می‌کشد",
+    "i.clip": "کلیپ",
+    "i.colorTitle": "رنگ‌آمیزی این تصویر: خودکار (فقط اگر رنگ داشته باشد) ← بی‌رنگ ← همیشه",
+    "i.color.auto": "خودکار",
+    "i.color.on": "رنگی",
+    "i.color.off": "بی‌رنگ",
+    "s.coloring": "رنگ‌آمیزی",
+    "s.coloringHint": "خودکار: فقط تصویرهایی که رنگ دارند. طرح‌های سیاه‌وسفید فقط کشیده می‌شوند",
+    "s.always": "همیشه",
+    "s.never": "هیچ‌وقت",
+    "s.shortLines": "خط‌های کوتاه",
+    "s.shortLinesHint": "برای کشیدن کوتاه‌اند: تصویر یا متن بدون دست ظاهر می‌شود",
+    "s.showPicture": "نمایش تصویر",
+    "s.showText": "نمایش متن",
+    "s.drawAnyway": "کشیدن مثل بقیه",
+    "s.shortThreshold": "کوتاه‌تر از",
+    "s.shortThresholdHint": "زمان تا شروع خط بعدی",
+    "s.zoom": "زوم",
+    "s.mix": "میکس",
+    "s.transitionHint": "میکس: برای هر تخته یک جابه‌جایی متفاوت",
+    "y.quick": "بدون کشیدن",
+    "y.quickText": "متن",
+    "y.quickHint": "برای کشیدن کوتاه است و بدون دست نمایش داده می‌شود (ظاهر ← خط‌های کوتاه)",
+    "e.claudeWillDraw": "خط هنوز صحنه ندارند: «ساخت ویدیو» اول از کلاد می‌خواهد آن‌ها را بکشد",
+    "e.claudeMissing": "خط هنوز صحنه ندارند (Claude Code پیدا نشد): به‌صورت متن نوشته می‌شوند",
+
     "help.html": `
       <h1>راهنما</h1>
       <h2>ساخت ویدیو در ۵ مرحله</h2>
@@ -600,8 +731,15 @@ python -m swa render "my-video"</pre>
         <li>PNG شفاف هم کار می‌کند. عکس‌های شلوغ به‌صورت کامل کشیده می‌شوند.</li>
         <li>طرح‌های <b>SVG</b> دقیقاً روی مسیر خطوطشان، خط به خط کشیده می‌شوند.</li>
       </ul>
-      <h2>تصویرساز ندارید؟ بگذارید Claude Code بکشد</h2>
-      <p>پوشه‌ی پروژه را در Claude Code باز کنید و بنویسید: <code>Draw the images for this project</code>. فایل <code>script.txt</code> را می‌خواند و برای هر خط یک طرح SVG طبق راهنمای سبک در <code>CLAUDE.md</code> داخل پوشه‌ی <code>images/</code> می‌سازد.</p>
+      <h2>تصویر ندارید؟ بگذارید کلاد بکشد</h2>
+      <p>در زبانه‌ی <b>تصویرها</b> گزینه‌ی <b>کلاد می‌کشد</b> را انتخاب کنید، یک دستور کوتاه بنویسید (سبک، شخصیت‌ها، رنگ‌ها) و <b>کشیدن با کلاد</b> را بزنید. Claude Code که روی همین کامپیوتر نصب است و با حساب Claude شما وارد شده، هر خط را به‌صورت صحنه‌ی SVG می‌کشد و هر چیز را با کلمه‌ای که از آن نام می‌برد هم‌زمان می‌کند. تخته، دست، زیرنویس و صدا همان می‌ماند. هر صحنه را می‌شود دوباره کشید یا با تصویر خودتان عوض کرد.</p>
+      <p>یا پوشه‌ی این برنامه را در Claude Code باز کنید و بنویسید <code>Draw the scenes for the project "my-video"</code>. برای خطی که حرکت لازم دارد، کلیپ متحرک با HyperFrames یا Remotion بخواهید: کلیپ‌ها (MP4/WebM) روی تخته پخش می‌شوند.</p>
+      <h2>رنگ، خط‌های کوتاه، جابه‌جایی</h2>
+      <ul>
+        <li><b>ظاهر ← رنگ‌آمیزی ← خودکار</b> فقط تصویرهای رنگی را رنگ می‌کند؛ طرح‌های سیاه‌وسفید فقط کشیده می‌شوند. دکمه‌ی 🎨 روی هر تصویر در زبانه‌ی <b>تصویرها</b> این را برای همان تصویر عوض می‌کند.</li>
+        <li><b>ظاهر ← خط‌های کوتاه</b>: خطی که کمتر از ۳ ثانیه است (قابل تنظیم) کشیده نمی‌شود؛ تصویر یا متنش بدون دست ظاهر می‌شود.</li>
+        <li><b>جابه‌جایی ← میکس</b> برای هر تخته یک جابه‌جایی متفاوت انتخاب می‌کند.</li>
+      </ul>
       <h2>خط فرمان</h2>
       <pre class="code" dir="ltr">python -m swa align "my-video"
 python -m swa render "my-video" --line 12 --draft

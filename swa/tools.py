@@ -43,12 +43,23 @@ def lint_svgs(project: Project) -> list[str]:
     """Problems that make an SVG draw badly. Empty list = all good."""
     from svgelements import SVG, Shape, Text
 
+    from .render.drawing import svg_cues
+    from .render.schedule import cue_indices
+    from .textnorm import tokenize
+
     problems: list[str] = []
     images, _ = project.images()
-    for n in [ln.id for ln in project.lines()]:
+    for line in project.lines():
+        n = line.id
         p = images.get(n)
         if p is None or p.suffix.lower() != ".svg":
             continue
+        cues = svg_cues(p)
+        if cues:
+            words = [{"w": w, "s": 0.0, "e": 0.0} for w in tokenize(line.text)]
+            for cue, idx in zip(cues, cue_indices(cues, words)):
+                if idx is None:
+                    problems.append(f"{p.name}: data-word=\"{cue}\" is not a word of line {n} ({line.text[:60]})")
         try:
             svg = SVG.parse(str(p), reify=True)
         except Exception as exc:

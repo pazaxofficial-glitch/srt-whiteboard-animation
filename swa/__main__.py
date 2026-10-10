@@ -6,6 +6,7 @@
     python -m swa align <project>      find line timings with Whisper
     python -m swa render <project>     render the video
     python -m swa render <project> --line 12 --draft   quick preview of one line
+    python -m swa claude <project>     let Claude Code draw the lines without a picture
 
 <project> is a project folder path or the name of a folder in data/projects.
 """
@@ -76,6 +77,11 @@ def main(argv: list[str] | None = None) -> int:
     ls = sub.add_parser("lint-svg", help="check SVG drawings before rendering")
     ls.add_argument("project")
 
+    cl = sub.add_parser("claude", help="let Claude Code draw the scenes (lines without a picture)")
+    cl.add_argument("project")
+    cl.add_argument("--lines", help="e.g. 3-8 (default: every line without a picture)")
+    cl.add_argument("--redo", action="store_true", help="redraw lines that already have a picture")
+
     sub.add_parser("hands", help="list drawing hands")
 
     args = ap.parse_args(argv)
@@ -144,6 +150,20 @@ def main(argv: list[str] | None = None) -> int:
             print(line)
         print("OK" if not problems else f"{len(problems)} problem(s)")
         return 1 if problems else 0
+
+    if args.cmd == "claude":
+        from .claude import ClaudeError, draw_scenes
+        proj = _project(args.project)
+        ids = None
+        if args.lines:
+            a, _, b = args.lines.partition("-")
+            ids = list(range(int(a), int(b or a) + 1))
+        try:
+            res = draw_scenes(proj, ids, args.redo, progress=_bar)
+        except ClaudeError as exc:
+            sys.exit(str(exc))
+        print(f"\nDrew {len(res['drawn'])} scene(s)." + (f" Not drawn: {res['missing']}" if res["missing"] else ""))
+        return 0 if not res["missing"] else 1
 
     if args.cmd == "hands":
         from .render.hands import list_hands

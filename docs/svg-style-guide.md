@@ -35,13 +35,36 @@ unless the user asks to redo them.
 ## Drawing order = animation order
 
 The pen draws stroked shapes **in document order**, then colours the filled
-shapes (also in document order). So:
+shapes (also in document order), each one with its own back-and-forth
+marker strokes that stay inside the shape. A shape drawn on top of another
+keeps its own colour: the shape underneath is only coloured where it is
+still visible. So:
 
 1. Order objects the way the narration mentions them.
 2. Inside an object: big outline first, then inner details, then small accents.
 3. Draw a person head → body → arms → legs, like a person would.
 4. Prefer a few long continuous paths over many tiny segments; long paths
    look like confident hand-drawing.
+
+## Timing: draw each object on its word
+
+Put each object in a group with `data-word` set to the word that mentions
+it. The hand waits until that word is spoken in this line, then draws the
+group (outline, then its colours):
+
+```svg
+<g data-word="shield"> … shield paths … </g>
+<g data-word="spear"> … spear paths … </g>
+```
+
+- Elements before the first timed group are drawn from the moment the line
+  starts; untimed elements after a group belong to that group.
+- The word is matched in order, ignoring case and punctuation, so
+  `data-word="spear"` finds "spears," after "shield". A number like
+  `data-word="5"` means the fifth word (when no word reads "5").
+- Use 1–4 timed groups per scene. Leave the first object untimed (or timed
+  to an early word) so the pen starts right away.
+- Write the word exactly as it appears in the script (Persian words too).
 
 ## Style
 
@@ -77,19 +100,22 @@ shapes (also in document order). So:
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" width="1600" height="900">
   <!-- 12. "He trained with his shield every morning." -->
   <g fill="none" stroke="#222222" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
-    <!-- sun first: "every morning" sets the scene -->
-    <circle cx="1250" cy="200" r="70" fill="#F2A23A"/>
-    <path d="M1250 100 V 70 M1250 300 V 330 M1150 200 H 1120 M1350 200 H 1380"/>
-    <!-- soldier: head, body, arms, legs -->
+    <!-- soldier first, from the start of the line: head, body, arms, legs -->
     <circle cx="640" cy="330" r="45"/>
     <path d="M640 375 L 630 560"/>
     <path d="M636 420 L 560 470 L 520 440"/>
     <path d="M630 560 L 590 690 M630 560 L 680 690"/>
-    <!-- shield, coloured after the line art -->
-    <circle cx="760" cy="470" r="110" fill="#D9452B"/>
-    <path d="M700 430 L 820 430 L 760 540 Z" fill="#F3E3B0"/>
-    <!-- ground -->
     <path d="M420 700 C 700 715, 1000 690, 1250 705"/>
+    <!-- shield on "shield", coloured right after its outline -->
+    <g data-word="shield">
+      <circle cx="760" cy="470" r="110" fill="#D9452B"/>
+      <path d="M700 430 L 820 430 L 760 540 Z" fill="#F3E3B0"/>
+    </g>
+    <!-- sun on "morning" -->
+    <g data-word="morning">
+      <circle cx="1250" cy="200" r="70" fill="#F2A23A"/>
+      <path d="M1250 100 V 70 M1250 300 V 330 M1150 200 H 1120 M1350 200 H 1380"/>
+    </g>
   </g>
 </svg>
 ```
@@ -103,6 +129,14 @@ python -m swa lint-svg <project>   # rule violations (black fills, <text>, no st
 python -m swa sheet <project> --lines 1-20   # writes contact-sheet.png: look at it
 python -m swa render <project> --line 12 --draft   # watch one line being drawn
 ```
+
+## Animated clips
+
+A line can also be a short video clip (`images/N.webm`, `.mp4` or `.mov`)
+that plays on the board instead of being drawn, e.g. a chart made with
+HyperFrames or Remotion. See `.claude/skills/draw-whiteboard-images/SKILL.md`
+for the size, length and background a clip needs. Use clips only where
+motion really helps.
 
 Open `contact-sheet.png` and look at every tile: is the idea readable at a
 glance, is anything filled black by mistake, are the objects centred? Fix and

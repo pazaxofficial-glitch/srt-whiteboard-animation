@@ -176,6 +176,21 @@ def strokes_from_mask(ink: np.ndarray, groups: np.ndarray) -> list[Stroke]:
         rr = np.interp(np.linspace(0, 1, len(pts)), np.linspace(0, 1, len(r)), r).astype(np.float32)
         g = int(groups[yi[len(yi) // 2], xi[len(xi) // 2]])
         strokes.append(Stroke(pts, rr, g))
+    # Dots and small blobs (pupils, full stops) skeletonize to a single pixel: give them a dab.
+    n, lab, stats, cents = cv2.connectedComponentsWithStats(ink.astype(np.uint8), connectivity=8)
+    if n > 1:
+        hit = np.zeros(n, bool)
+        for s in strokes:
+            xi = np.clip(s.points[:, 0].astype(int), 0, w - 1)
+            yi = np.clip(s.points[:, 1].astype(int), 0, h - 1)
+            hit[lab[yi, xi]] = True
+        for c in np.nonzero(~hit[1:])[0] + 1:
+            x, y, bw, bh, _a = (int(v) for v in stats[c])
+            r = float(dist[y:y + bh, x:x + bw][lab[y:y + bh, x:x + bw] == c].max()) + 1.6
+            cx, cy = float(cents[c][0]), float(cents[c][1])
+            pts = np.array([[cx - 0.5, cy], [cx + 0.5, cy]], np.float32)
+            g = int(groups[min(h - 1, int(cy)), min(w - 1, int(cx))])
+            strokes.append(Stroke(pts, np.full(2, max(r, 0.5 * max(bw, bh) + 1.0), np.float32), g))
     return strokes
 
 
@@ -248,7 +263,7 @@ def order_strokes(strokes: list[Stroke], group_order: list[int], start: tuple[fl
 
 
 # ──────────────────────────────────────────────────────────────
-# Colouring sweep
+# Colouring in
 # ──────────────────────────────────────────────────────────────
 def zigzag(x0: int, y0: int, x1: int, y1: int, radius: float) -> np.ndarray:
     """Back-and-forth brush path covering a box."""
@@ -262,3 +277,102 @@ def zigzag(x0: int, y0: int, x1: int, y1: int, radius: float) -> np.ndarray:
         pts.append((a, min(y, y1)))
         pts.append((b, min(y, y1)))
     return np.array(pts, dtype=np.float32)
+
+
+def fill_radius(mask: np.ndarray, diag: float) -> float:
+    """Marker size for colouring one region: wide for big areas, narrow for thin ones."""
+    area = float(np.count_nonzero(mask))
+    lo, hi = max(3.0, 0.007 * diag), max(4.0, 0.032 * diag)
+    r = float(np.clip(0.09 * np.sqrt(area), lo, hi))
+    inscribed = float(cv2.distanceTransform((mask > 0).astype(np.uint8), cv2.DIST_L2, 3).max())
+    return max(2.0, min(r, max(lo * 0.6, inscribed * 1.1)))
+
+
+def hatch(mask: np.ndarray, radius: float, angle: float = 55.0, seed: int = 0) -> list[np.ndarray]:
+    """Back-and-forth marker strokes that colour in a region, the way a hand does.
+
+    Strokes run at `angle` degrees (55 = "/" for a right hand, 125 = "\\" for a
+    left one) and stay inside the shape. Neighbouring rows overlap a little and
+    are joined into zigzags wherever the shape allows, so the pen only lifts
+    where the outline forces it to. Returns polylines in mask coordinates.
+    """
+    ys, xs = np.nonzero(mask)
+    if len(xs) == 0:
+        return []
+    rng = np.random.default_rng(seed)
+    a = np.radians(angle + rng.uniform(-6, 6))
+    dx, dy = np.cos(a), -np.sin(a)          # along a stroke
+    nx, ny = np.sin(a), np.cos(a)           # from one row to the next
+    u = xs * dx + ys * dy
+    v = xs * nx + ys * ny
+    stride = max(2.0, radius * 1.35)
+    v0 = float(v.min())
+    rows = ((v - v0) / stride).astype(np.int64)
+    ui = np.round(u - u.min()).astype(np.int64)
+    span_u = int(ui.max()) + 3
+    keys = np.unique(rows * span_u + ui)
+    r_of, u_of = keys // span_u, keys % span_u + float(u.min())
+    # Runs of covered u inside each row band: a new run where the row changes or u jumps.
+    cut = np.nonzero((np.diff(r_of) != 0) | (np.diff(u_of) > 2.5))[0] + 1
+    starts = np.concatenate([[0], cut])
+    ends = np.concatenate([cut, [len(keys)]]) - 1
+    by_row: dict[int, list[list[float]]] = {}
+    for s, e in zip(starts, ends):
+        by_row.setdefault(int(r_of[s]), []).append([float(u_of[s]), float(u_of[e])])
+
+    # Join overlapping spans of consecutive rows into chains (one zigzag each).
+    chains: list[list[tuple[int, float, float]]] = []
+    open_: list[int] = []
+    for row in sorted(by_row):
+        nxt_open: list[int] = []
+        used: set[int] = set()
+        for ua, ub in by_row[row]:
+            best, best_ov = -1, 0.25 * stride
+            for c in open_:
+                if c in used:
+                    continue
+                pr, pa, pb = chains[c][-1]
+                ov = min(ub, pb) - max(ua, pa)
+                if pr == row - 1 and ov > best_ov:
+                    best, best_ov = c, ov
+            if best < 0:
+                chains.append([])
+                best = len(chains) - 1
+            chains[best].append((row, ua, ub))
+            used.add(best)
+            nxt_open.append(best)
+        open_ = nxt_open
+
+    inset = radius * 0.55
+    out = []
+    for chain in chains:
+        pts = []
+        for j, (row, ua, ub) in enumerate(chain):
+            vc = v0 + (row + 0.5) * stride + rng.uniform(-0.08, 0.08) * stride
+            if ub - ua > 2 * inset:
+                a_, b_ = ua + inset + rng.uniform(-0.2, 0.2) * radius, ub - inset + rng.uniform(-0.2, 0.2) * radius
+            else:
+                a_ = b_ = (ua + ub) / 2
+            if j % 2:
+                a_, b_ = b_, a_
+            bow = rng.uniform(-0.18, 0.18) * stride          # strokes are never quite straight
+            for uu, vv in ((a_, vc), ((a_ + b_) / 2, vc + bow), (b_, vc)):
+                pts.append((uu * dx + vv * nx, uu * dy + vv * ny))
+        out.append(np.array(pts, dtype=np.float32))
+    return out
+
+
+def order_paths(paths: list[np.ndarray], start: tuple[float, float]) -> list[np.ndarray]:
+    """Nearest-neighbour order (either end may come first) starting from `start`."""
+    pool = list(paths)
+    pen = np.array(start, dtype=np.float32)
+    out = []
+    while pool:
+        d = [min(np.linalg.norm(p[0] - pen), np.linalg.norm(p[-1] - pen)) for p in pool]
+        i = int(np.argmin(d))
+        p = pool.pop(i)
+        if np.linalg.norm(p[-1] - pen) < np.linalg.norm(p[0] - pen):
+            p = p[::-1].copy()
+        out.append(p)
+        pen = p[-1]
+    return out

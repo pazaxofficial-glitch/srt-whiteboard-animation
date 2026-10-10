@@ -25,6 +25,8 @@ from pathlib import Path
 from .textnorm import detect_language, normalize_text
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".svg"}
+CLIP_EXTS = {".mp4", ".webm", ".mov", ".m4v"}       # a line can also play a video clip
+VISUAL_EXTS = IMAGE_EXTS | CLIP_EXTS
 AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac", ".opus", ".wma", ".mp4", ".mov", ".webm"}
 
 DEFAULT_SETTINGS: dict = {
@@ -36,19 +38,25 @@ DEFAULT_SETTINGS: dict = {
     "hand": "marker",            # hand folder name in the library, or "none"
     "hand_scale": 1.0,
     "color_mode": "ink_then_color",  # ink_then_color | ink_only | color_strokes
+    "coloring": "auto",          # colouring pass: auto (only pictures that have colour) | on | off
     "stroke_order": "auto",      # auto | left_to_right | right_to_left | top_to_bottom
     "sync_mode": "speech",       # speech: pen moves while words are spoken; linear: constant speed
     "draw_fill": 0.8,            # share of each line's time spent drawing
     "ink_share": 0.7,            # share of the drawing time spent on line art (rest = colouring)
     "min_draw": 0.8,             # seconds
     "max_draw": 14.0,            # seconds
-    "transition": "slide",       # slide | fade | cut | wipe
+    "transition": "slide",       # slide | fade | wipe | zoom | cut | mix (a varied mix)
     "transition_duration": 0.6,  # seconds
+    "short_lines": "show",       # lines shorter than short_threshold: draw | show (picture fades in) | text
+    "short_threshold": 3.0,      # seconds
     "image_margin": 0.05,        # empty border around each image (fraction of frame)
     "line_thickness": 1.0,       # thickness multiplier for SVG strokes
     "whisper_model": "small",
     "quality": "high",           # draft | high
     "tail": 0.6,                 # seconds of finished frame after the narration ends
+    # Where the pictures come from
+    "engine": "images",          # images: you upload them | claude: Claude Code draws them
+    "claude_brief": "",          # your instructions for Claude (style, characters, colours...)
     # Handwriting
     "handwriting": True,         # write words marked *like this* when they are spoken
     "text_lines": "write",       # lines without an image: write | keep (previous drawing stays)
@@ -206,7 +214,7 @@ def map_images(images_dir: Path) -> tuple[dict[int, Path], list[str]]:
     warnings: list[str] = []
     if not images_dir.exists():
         return mapping, warnings
-    files = sorted(p for p in images_dir.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_EXTS)
+    files = sorted(p for p in images_dir.iterdir() if p.is_file() and p.suffix.lower() in VISUAL_EXTS)
     for p in files:
         n = image_number(p)
         if n is None:
@@ -240,6 +248,7 @@ class Project:
     name: str = ""
     settings: dict = field(default_factory=lambda: dict(DEFAULT_SETTINGS))
     created: str = ""
+    line_options: dict = field(default_factory=dict)   # "12" -> {"coloring": "off"}
 
     # ── paths ──────────────────────────────────────────────
     @property
@@ -296,12 +305,27 @@ class Project:
         settings = dict(DEFAULT_SETTINGS)
         settings.update(data.get("settings", {}))
         return cls(root=root, name=data.get("name", root.name), settings=settings,
-                   created=data.get("created", ""))
+                   created=data.get("created", ""), line_options=data.get("line_options", {}))
 
     def save(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
         data = {"name": self.name, "created": self.created, "settings": self.settings}
+        if self.line_options:
+            data["line_options"] = self.line_options
         self.config_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    def line_option(self, line_id: int, key: str, default=None):
+        return self.line_options.get(str(line_id), {}).get(key, default)
+
+    def set_line_option(self, line_id: int, key: str, value) -> None:
+        """Per-line choice; None removes it (back to the project setting)."""
+        opts = self.line_options.setdefault(str(line_id), {})
+        if value is None:
+            opts.pop(key, None)
+        else:
+            opts[key] = value
+        if not opts:
+            self.line_options.pop(str(line_id), None)
 
     # ── content ────────────────────────────────────────────
     def narration_path(self) -> Path | None:

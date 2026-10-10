@@ -17,9 +17,9 @@ from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from .. import __version__, paths
+from .. import __version__, claude, paths
 from ..align import align_project, whisper_backends
-from ..project import AUDIO_EXTS, DEFAULT_SETTINGS, IMAGE_EXTS, Project, slugify
+from ..project import AUDIO_EXTS, CLIP_EXTS, DEFAULT_SETTINGS, VISUAL_EXTS, Project, slugify
 from ..render import hands as hands_mod
 from ..render.backgrounds import BUILTIN as BUILTIN_BACKGROUNDS
 from ..render.backgrounds import make_background
@@ -86,6 +86,7 @@ def info():
         "ffmpeg": ffmpeg_ok(),
         "defaults": DEFAULT_SETTINGS,
         "data_dir": str(paths.DATA),
+        "claude": claude.find_cli() is not None,
     }
 
 
@@ -125,6 +126,8 @@ def get_project(slug: str):
         "timeline": proj.load_timeline(),
         "jobs": [j.as_dict() for j in jobs.active_for(slug)],
         "path": str(proj.root),
+        "line_options": proj.line_options,
+        "claude_prompt": claude.manual_prompt(proj),
     })
     return st
 
@@ -156,6 +159,19 @@ def update_settings(slug: str, data: dict = Body(...)):
                 raise HTTPException(400, f"Bad value for {k}")
     proj.save()
     return proj.settings
+
+
+@app.put("/api/projects/{slug}/lines/{line_id}")
+def update_line(slug: str, line_id: int, data: dict = Body(...)):
+    """Per-line choices. {"coloring": "auto" | "on" | "off"}"""
+    proj = _proj(slug)
+    if "coloring" in data:
+        value = str(data["coloring"])
+        if value not in ("auto", "on", "off"):
+            raise HTTPException(400, "coloring must be auto, on or off")
+        proj.set_line_option(line_id, "coloring", None if value == "auto" else value)
+    proj.save()
+    return {"line_options": proj.line_options}
 
 
 @app.put("/api/projects/{slug}/script")
@@ -215,13 +231,13 @@ def upload_images(slug: str, files: list[UploadFile] = File(...), replace: bool 
                 with zipfile.ZipFile(tmp) as zf:
                     for member in zf.infolist():
                         mname = Path(member.filename).name
-                        if member.is_dir() or Path(mname).suffix.lower() not in IMAGE_EXTS or mname.startswith("."):
+                        if member.is_dir() or Path(mname).suffix.lower() not in VISUAL_EXTS or mname.startswith("."):
                             continue
                         with zf.open(member) as src, (proj.images_dir / mname).open("wb") as dst:
                             shutil.copyfileobj(src, dst)
                         saved += 1
             continue
-        if ext not in IMAGE_EXTS:
+        if ext not in VISUAL_EXTS:
             skipped.append(name)
             continue
         _save_upload(up, proj.images_dir / name)
@@ -261,7 +277,7 @@ def get_image(slug: str, name: str, thumb: bool = False):
     tdir.mkdir(exist_ok=True)
     t = tdir / (p.name + ".jpg")
     if not t.exists() or t.stat().st_mtime < p.stat().st_mtime:
-        img = imread(p)
+        img = _clip_frame(p) if p.suffix.lower() in CLIP_EXTS else imread(p)
         if img is None:
             raise HTTPException(415, "Unreadable image")
         if img.shape[2] == 4:
@@ -273,6 +289,47 @@ def get_image(slug: str, name: str, thumb: bool = False):
         ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 82])
         buf.tofile(str(t))
     return FileResponse(t, media_type="image/jpeg")
+
+
+def _clip_frame(path: Path):
+    """One frame from a video clip (for its thumbnail)."""
+    from ..render.encoder import ffmpeg_path
+    try:
+        out = subprocess.run([ffmpeg_path(), "-loglevel", "error", "-ss", "0.8", "-i", str(path), "-frames:v", "1",
+                              "-f", "image2pipe", "-vcodec", "png", "-"], capture_output=True, timeout=30).stdout
+    except (OSError, RuntimeError, subprocess.TimeoutExpired):
+        return None
+    if not out:
+        return None
+    return cv2.imdecode(np.frombuffer(out, np.uint8), cv2.IMREAD_UNCHANGED)
+
+
+# ── Claude draws the scenes ────────────────────────────────
+@app.post("/api/projects/{slug}/claude")
+def start_claude(slug: str, data: dict = Body(default={})):
+    proj = _proj(slug)
+    if claude.find_cli() is None:
+        raise HTTPException(400, "Claude Code was not found on this computer.")
+    lines = [int(x) for x in data.get("lines") or []] or None
+    redo = bool(data.get("redo"))
+    if lines is None and redo:
+        lines = [ln.id for ln in proj.lines()]
+
+    def run(job):
+        def prog(msg, frac, info):
+            job.message, job.progress = msg, frac
+            job.info.update(info or {})
+        try:
+            return claude.draw_scenes(proj, lines, redo, progress=prog, cancel=job.cancel)
+        except claude.ClaudeError as exc:
+            job.info["code"] = exc.code
+            raise
+
+    try:
+        job = jobs.start("claude", slug, run)
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc))
+    return job.as_dict()
 
 
 # ── sync ───────────────────────────────────────────────────

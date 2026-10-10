@@ -253,6 +253,15 @@ input.color { width: 56px; height: 34px; padding: 2px; border-radius: 8px; borde
 .icard .txt { color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .icard .x { position: absolute; top: 6px; inset-inline-end: 6px; opacity: 0; transition: opacity .15s; }
 .icard:hover .x { opacity: 1; }
+.icard .pic { position: relative; }
+.icard .foot { display: flex; justify-content: space-between; align-items: center; gap: 6px; padding: 0 9px 8px; }
+.icard .redo { position: absolute; top: 6px; inset-inline-end: 6px; }
+.icard .clipmark { position: absolute; bottom: 6px; inset-inline-start: 6px; background: rgba(0, 0, 0, .65); color: #fff; font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 6px; }
+.chip { border: 1px solid var(--border); background: var(--panel-2); color: var(--muted); border-radius: 999px; padding: 2px 9px; font-size: 11.5px; font-weight: 600; cursor: pointer; }
+.chip:hover { border-color: var(--accent); color: var(--text); }
+.chip.on { border-color: color-mix(in srgb, var(--accent) 55%, transparent); color: var(--accent-text); background: var(--accent-soft); }
+.chip.off { text-decoration: line-through; text-decoration-thickness: 1px; }
+.badge.quick { margin-inline-start: 8px; padding: 1px 8px; font-size: 11px; color: var(--accent-text); border-color: color-mix(in srgb, var(--accent) 45%, transparent); background: var(--accent-soft); }
 .iconbtn { width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--border-strong); background: var(--panel); display: grid; place-items: center; cursor: pointer; padding: 0; }
 .iconbtn:hover { border-color: var(--accent); color: var(--accent-text); }
 .iconbtn svg { width: 15px; height: 15px; }
@@ -288,6 +297,14 @@ table.tl input { width: 86px; padding: 5px 8px; font-variant-numeric: tabular-nu
 .method.on { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .method b { display: block; margin-bottom: 4px; }
 .method p { font-size: 12.5px; color: var(--muted); }
+.methods.two { grid-template-columns: repeat(2, 1fr); }
+
+/* ── Claude draws ────────────────────────────────────── */
+textarea.brief { min-height: 96px; }
+.cmd { display: flex; gap: 8px; align-items: center; background: var(--input); border: 1px solid var(--border); border-radius: 10px; padding: 8px 8px 8px 12px; }
+.cmd code { flex: 1; font-size: 12.5px; overflow-wrap: anywhere; }
+details > summary { cursor: pointer; font-weight: 600; }
+details.card > summary { list-style-position: inside; }
 
 /* ── toasts & modal ──────────────────────────────────── */
 .toasts { position: fixed; bottom: 20px; inset-inline-end: 20px; display: flex; flex-direction: column; gap: 8px; z-index: 50; }
@@ -316,7 +333,7 @@ pre.code { background: var(--input); border: 1px solid var(--border); border-rad
   .sidebar { position: static; height: auto; flex-direction: row; flex-wrap: wrap; align-items: center; }
   nav { flex-direction: row; flex-wrap: wrap; }
   .sidebar-foot { margin: 0; flex-direction: row; }
-  .grid2, .grid-style, .methods { grid-template-columns: 1fr; }
+  .grid2, .grid-style, .methods, .methods.two { grid-template-columns: 1fr; }
   .view { padding: 20px 16px 40px; }
   .setting { grid-template-columns: 1fr; }
 }

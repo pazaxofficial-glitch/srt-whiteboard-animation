@@ -23,12 +23,13 @@ from . import audio
 from .backgrounds import make_background
 from .board import Board
 from .captions import CaptionRenderer, build_chunks, write_srt
-from .drawing import PreparedDrawing, content_area, prepare
+from .clips import PreparedClip, prepare_clip
+from .drawing import PreparedDrawing, content_area, prepare, svg_cues
 from .encoder import VideoWriter
 from .hands import HandRig, find_hand
 from .handwriting import PreparedText, prepare_text
 from .scene import ShotScene
-from .schedule import Shot, plan_shots
+from .schedule import Shot, cue_indices, plan_shots
 from .text import FontPair
 
 Progress = Callable[[str, float, dict], None]
@@ -51,6 +52,26 @@ def frame_size(settings: dict) -> tuple[int, int]:
 def script_marks(project: Project) -> dict[int, list[int]]:
     """Line id -> indices of the words marked *like this* in the script."""
     return {ln.id: ln.marks for ln in project.lines() if ln.marks}
+
+
+def timed_cues(timeline: dict, images: dict[int, Path]) -> dict[int, list[int]]:
+    """Line id -> word indices where timed parts of its SVG start (data-word="...")."""
+    out: dict[int, list[int]] = {}
+    for ln in timeline["lines"]:
+        path = images.get(int(ln["id"]))
+        if path is None or path.suffix.lower() != ".svg":
+            continue
+        cues = svg_cues(path)
+        idx = [i for i in cue_indices(cues, ln.get("words", [])) if i is not None] if cues else []
+        if idx:
+            out[int(ln["id"])] = idx
+    return out
+
+
+def line_coloring(project: Project, settings: dict, line_id: int) -> str:
+    """Colouring for one picture: its own choice in the Images tab, else the project setting."""
+    own = project.line_option(line_id, "coloring")
+    return own if own in ("on", "off") else settings.get("coloring", "auto")
 
 
 # ──────────────────────────────────────────────────────────────
@@ -90,8 +111,11 @@ def shot_layout(shot: Shot, W: int, H: int, settings: dict, caption_band: tuple[
 
 
 def prepare_shot(shot: Shot, W: int, H: int, settings: dict, dark: bool, language: str,
-                 caption_band: tuple[int, int] | None) -> tuple[PreparedDrawing | None, PreparedText | None]:
+                 caption_band: tuple[int, int] | None
+                 ) -> tuple[PreparedDrawing | PreparedClip | None, PreparedText | None]:
     lay = shot_layout(shot, W, H, settings, caption_band)
+    if shot.kind == "clip":
+        return prepare_clip(shot.image, lay.image_area, dark), None
     drawing = prepare(shot.image, lay.image_area, settings, dark, language) if shot.image is not None else None
     text = None
     if lay.text_area is not None and shot.write_words:
@@ -110,11 +134,27 @@ def _ease(q: float) -> float:
     return q * q * (3 - 2 * q)
 
 
+def _zoomed(img: np.ndarray, s: float) -> np.ndarray:
+    """The frame scaled by s (>= 1) around its centre, same size."""
+    h, w = img.shape[:2]
+    M = np.array([[s, 0, (1 - s) * w / 2], [0, s, (1 - s) * h / 2]], np.float32)
+    return cv2.warpAffine(img, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+
+
 def transition_frame(kind: str, prev: np.ndarray, new: np.ndarray, q: float, rtl: bool) -> np.ndarray:
     q = _ease(q)
     h, w = prev.shape[:2]
     if kind == "fade":
         return cv2.addWeighted(prev, 1 - q, new, q, 0)
+    if kind == "zoom":
+        # The old board moves towards the viewer and fades; the new one settles into place.
+        return cv2.addWeighted(_zoomed(prev, 1 + 0.1 * q), 1 - q, _zoomed(new, 1.06 - 0.06 * q), q, 0)
+    if kind == "slide_up":
+        dy = int(round(q * h))
+        out = np.empty_like(prev)
+        out[:h - dy] = prev[dy:]
+        out[h - dy:] = new[:dy]
+        return out
     if kind == "wipe":
         edge = int(q * (w + 120)) - 60
         ramp = np.clip((edge - np.arange(w)) / 60 + 0.5, 0, 1).astype(np.float32)
@@ -175,7 +215,6 @@ def render_project(project: Project, out_path: Path | None = None, progress: Pro
     mode = settings.get("color_mode", "ink_then_color")
     ink_share = float(settings.get("ink_share", 0.7))
     sync_mode = settings.get("sync_mode", "speech")
-    trans_kind = settings.get("transition", "slide")
 
     bg, dark = make_background(settings.get("background", "whiteboard"), W, H, paths.USER_BACKGROUNDS)
     hand = None
@@ -190,7 +229,7 @@ def render_project(project: Project, out_path: Path | None = None, progress: Pro
     captions = CaptionRenderer(timeline, W, H, settings)
     cap_band = captions.band() if captions.enabled else None
 
-    shots = plan_shots(timeline, images, settings, end_time, script_marks(project))
+    shots = plan_shots(timeline, images, settings, end_time, script_marks(project), timed_cues(timeline, images))
     if not shots:
         raise ValueError("Nothing to draw: no line has an image (and writing lines as text is off).")
     t_to = end_time if t_to is None else min(t_to, end_time)
@@ -248,9 +287,11 @@ def render_project(project: Project, out_path: Path | None = None, progress: Pro
                     if progress:
                         progress(f"Skipping line {shots[cur].line_id}: {exc}", max(0.0, (f - f_from) / total), {})
                     drawing, text = None, None
-                scene = ShotScene(shots[cur], board, drawing, text, mode, ink_share, fps, sync_mode)
+                scene = ShotScene(shots[cur], board, drawing, text, mode, ink_share, fps, sync_mode,
+                                  line_coloring(project, settings, shots[cur].line_id))
+                trans_kind = shots[cur].trans_kind
                 if cur > 0 and trans_kind != "cut" and shots[cur].start > shots[cur].trans_start:
-                    log.event(shots[cur].trans_start, "whoosh" if trans_kind in ("slide", "fade") else "erase",
+                    log.event(shots[cur].trans_start, "erase" if trans_kind == "wipe" else "whoosh",
                               shots[cur].start - shots[cur].trans_start)
 
             hand_state = None
@@ -259,9 +300,9 @@ def render_project(project: Project, out_path: Path | None = None, progress: Pro
             else:
                 shot = shots[cur]
                 if t < shot.start:
-                    if prev_img is not None and trans_kind != "cut" and shot.start > shot.trans_start:
+                    if prev_img is not None and shot.trans_kind != "cut" and shot.start > shot.trans_start:
                         q = (t - shot.trans_start) / max(1e-6, shot.start - shot.trans_start)
-                        frame = transition_frame(trans_kind, prev_img, board.img, q, rtl)
+                        frame = transition_frame(shot.trans_kind, prev_img, board.img, q, rtl)
                     else:
                         frame = prev_img if prev_img is not None else board.img
                     target = scene.entry_target() if scene is not None else None
@@ -307,6 +348,8 @@ def render_project(project: Project, out_path: Path | None = None, progress: Pro
         writer.abort()
         raise
     finally:
+        if scene is not None:
+            scene.close()
         pool.shutdown(wait=False, cancel_futures=True)
 
     try:
@@ -337,6 +380,8 @@ def still_frame(project: Project, line_id: int | None = None, overrides: dict | 
         shots = plan_shots(timeline, images, settings, float(timeline.get("duration") or 60) + 1, marks)
         pick = [s for s in shots if line_id is None or s.line_id == line_id]
         shot = pick[0] if pick else (shots[0] if shots else None)
+        if shot is not None and shot.mode == "appear":
+            shot.mode = "draw"      # the still shows the finished board either way
     if shot is None and images:
         lid = line_id if line_id in images else min(images)
         shot = Shot(lid, images[lid], 0.0, 0.0, 1.0, 1.0)
@@ -346,10 +391,13 @@ def still_frame(project: Project, line_id: int | None = None, overrides: dict | 
     pos = (W * 0.6, H * 0.6)
     if shot is not None:
         drawing, text = prepare_shot(shot, W, H, settings, dark, project.language(), cap_band)
-        scene = ShotScene(shot, board, drawing, text, settings.get("color_mode", "ink_then_color"), 0.7, 30, "linear")
+        if isinstance(drawing, PreparedClip):
+            drawing.still_at = min(1.0, drawing.duration * 0.4)
+        scene = ShotScene(shot, board, drawing, text, settings.get("color_mode", "ink_then_color"), 0.7, 30, "linear",
+                          line_coloring(project, settings, shot.line_id))
         scene.finish()
         strokes = (text.strokes if text is not None and text.strokes else
-                   drawing.strokes if drawing is not None else [])
+                   drawing.strokes if isinstance(drawing, PreparedDrawing) else [])
         if strokes:
             pos = tuple(strokes[len(strokes) * 2 // 3].points[-1])
     img = board.img.copy()
