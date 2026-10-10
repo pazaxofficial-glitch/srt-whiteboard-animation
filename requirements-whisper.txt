@@ -1,0 +1,2 @@
+# Speech sync. Skip this if Whisper is already installed on your computer.
+faster-whisper>=1.0

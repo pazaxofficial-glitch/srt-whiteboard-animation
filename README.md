@@ -1,169 +1,170 @@
-# SRT 白板动画 Skill
+<p align="center">
+  <img src="swa/app/static/logo.svg" width="84" alt="">
+</p>
 
-将 SRT 字幕转为按叙事顺序绘制的白板手绘视频Skill。它结合了**分区遮罩编排**与**流式笔迹绘制**：每个元素跟随字幕依次出场，笔尖在区域内连续落墨，再逐步添彩，最终导出 MP4。
+<h1 align="center">Simple Whiteboard Animation</h1>
 
-适合把知识讲解、故事口播、课程字幕或短视频文案制作成暖米黄色纸张底的手绘动画。
+<p align="center">
+  <b>Narration + script + images → a hand-drawn whiteboard video, in sync with every line.</b><br>
+  Runs on your own computer. No subscriptions, no paid image models.
+</p>
 
-## 效果示例
+<p align="center">
+  <a href="README.fa.md">فارسی</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#how-it-works">How it works</a> ·
+  <a href="#let-claude-code-draw-the-images">Claude Code drawing</a> ·
+  <a href="#command-line">CLI</a>
+</p>
 
-**场景：猴子山抢香蕉** —— 随着字幕的叙事顺序，依次绘制假山与小猴、抢香蕉的大猴，以及围观小朋友。
+<p align="center">
+  <img src="docs/images/demo.gif" width="100%" alt="A hand drawing a Spartan helmet, a shield and spear, and mountains with a running soldier, one picture per narration line">
+</p>
 
-![猴子山抢香蕉：SRT 白板动画演示](examples/scene-01-monkey-mountain-stream.gif)
+## What it does
 
-原始线稿：[查看 PNG](examples/scene-01-monkey-mountain.png)。
+You upload three things:
 
-## 核心能力
+1. **The narration** (MP3, WAV, M4A…)
+2. **The script**, one line per picture: `1. Life, the Spartan way.` `2. Every boy was given a shield…`
+3. **The images**, named by line number: `1.png`, `2.png` … `300.png` (PNG, JPG, WebP or SVG)
 
-- 解析 SRT 字幕，并按建议的 25–35 秒时长拆分场景
-- 先输出分镜与配图策略，确保每一幕只表达一个核心意思
-- 按字幕事件而非画面坐标，为元素建立语义化的绘制顺序
-- 用 `annotation.json` 管理区域、时序、字幕关联和重叠保护区
-- 每个区域采用连续流式笔迹：先 `ink` 铺线稿，再 `color` 添彩
-- 支持浏览器预览台调整区域、顺序、时间和字幕关联
-- 支持逐幕渲染与多幕合并，输出完整 MP4
+Whisper listens to the narration and finds the exact moment each line is
+spoken. When line 58 starts, the hand starts drawing image 58: outline first,
+then colour, moving while the narrator speaks and slowing down in pauses.
+Then the board changes and the next drawing begins. You get an MP4 with your
+voice-over.
 
-## 工作方式
+<p align="center"><img src="docs/images/app.jpg" width="100%" alt="The app: purple and black interface with board, hand and drawing options and a live preview"></p>
 
-该 Skill 的关键在于“字幕驱动、逐步确认”。每一步完成后都等待确认，避免在分镜、线稿或标注尚未定稿时浪费渲染成本：
+## Features
 
-1. 解析 SRT，输出分镜与配图策略。
-2. 确认后生成统一风格的线稿。
-3. 确认线稿后，结合字幕和原图创建标注，并载入预览台。
-4. 确认标注后，生成分区与方向检查图。
-5. 在预览台调整区域、叙事顺序、时序和字幕关联并保存。
-6. 确认最终标注后，逐幕渲染 MP4。
-7. 多幕项目在确认各幕成片后合并。
+- **Voice-synced drawing**: each image starts on the first word of its line (Whisper word timestamps, aligned to your script so recognition mistakes do not matter)
+- **Natural pen**: line art is traced into real pen strokes; the hand follows them, lifts between strokes and colours in afterwards. SVG images are drawn exactly along their paths
+- **Boards**: whiteboard, plain white, paper, chalkboard, blackboard, or your own image. On dark boards dark ink turns into chalk automatically
+- **Hands**: built-in marker hand, or upload any number of your own PNG hands and click where the pen tip is
+- **Styles**: outline then colour, draw directly in colour, or line art only; slide / fade / wipe / cut transitions
+- **Formats**: 16:9 YouTube, 9:16 Shorts/Reels, 1:1, 4:5, from 720p to 4K, 24/30/60 fps
+- **Fine control**: edit any line's start/end, play a line's audio, render a preview of a single line
+- **English and Persian**: the interface switches between English and فارسی (right-to-left); Persian narration and scripts are supported
+- **Offline**: everything runs locally. Internet is only needed once, to install components
+- **Agent friendly**: projects are plain folders; Claude Code can draw all the SVG images for you
 
-## 视觉规范
+## Quick start
 
-- 暖米黄色纸张背景：建议 `#F5EBD7`
-- 深灰色素描线条，红、橙、蓝仅作少量概念性点缀
-- 极简手绘、干净背景与充足留白
-- 不使用场景文字、标签、摄影感、3D 效果或复杂纹理
+You need **Python 3.10+** and **FFmpeg**. Whisper is optional but recommended
+for exact sync.
 
-## 安装与环境
+| | |
+|---|---|
+| **Windows** | Double-click **`Start-Windows.bat`** |
+| **macOS** | Double-click **`Start-Mac.command`** (first time: right-click → Open) |
+| **Linux** | Run `./start.sh` |
 
-Skill 自带独立的 Python 虚拟环境准备脚本。首次运行时执行：
+The first start prepares a private environment (one time, needs internet).
+After that it opens straight to the app in your browser at
+`http://127.0.0.1:7860`. Close the black window to stop it.
 
-```bash
-python scripts/prepare_env.py --check
-python scripts/prepare_env.py
-```
-
-成功后第一条命令会输出 `ENV_PY=<路径>`；后续渲染请使用该解释器，确保依赖隔离。
-
-## 项目素材结构
-
-```text
-assets/whiteboard/<项目名>/
-├── scene-01-<名称>.png
-├── scene-01-<名称>.annotation.json
-├── scene-01-<名称>-whiteboard.mp4
-└── scene-01-<名称>-preview.mp4
-```
-
-图片与标注必须同名，例如 `scene-01-demo.png` 对应 `scene-01-demo.annotation.json`。
-
-## 标注格式
-
-每个元素使用原图的整数像素坐标，并通过 `sequence`、`subtitle` 与 `narrativeRole` 关联字幕中的事件。区域应按“场景铺垫 → 关键人物/物体 → 动作或变化 → 反应/结果”排序。
-
-```json
-{
-  "sceneId": "scene-01",
-  "canvas": { "width": 1672, "height": 941 },
-  "storyBasis": "小猴在猴子山上拿着香蕉，大猴抢走香蕉，孩子们在旁观看。",
-  "sceneDurationMs": 9000,
-  "elements": [
-    {
-      "id": "rockery",
-      "label": "猴子山场景",
-      "sequence": 1,
-      "narrativeRole": "故事的场景铺垫",
-      "subtitle": "小猴子坐在猴子山顶，手里拿着香蕉。",
-      "type": "structure",
-      "region": { "x": 20, "y": 120, "width": 540, "height": 780 },
-      "reveal": {
-        "direction": "top_to_bottom",
-        "startMs": 300,
-        "durationMs": 2600,
-        "maskPaddingPx": 22,
-        "protectedRegions": []
-      },
-      "handPath": { "start": [290, 130], "end": [290, 890], "easing": "easeInOut" }
-    }
-  ]
-}
-```
-
-`direction` 和 `handPath` 用于预览台的矩形代理；最终成片的真实笔迹由流式绘制器自动生成。对于相互遮挡的对象，在较早元素的 `protectedRegions` 中标出需要延后显示的区域，避免后续内容提前露出。
-
-## 常用命令
-
-解析字幕并生成建议分镜：
+The environment can see packages you already installed, so an existing
+Whisper installation is used as is. If you do not have Whisper yet:
 
 ```bash
-python scripts/parse_srt.py <字幕.srt> --target-sec 30 --min-sec 25 --max-sec 35
+pip install faster-whisper
 ```
 
-生成区域检查图：
+Tip: right-click `Start-Windows.bat` → *Send to → Desktop (create shortcut)*
+for a one-click icon.
+
+## How it works
+
+1. **Narration & script**: upload the voice-over and paste the script. Numbered lines (`1.` `2)` `[3]` `4 -`) or one line per row. Persian digits work too.
+2. **Images**: drop all images at once (or a ZIP). The number in each file name decides its line: `7.png`, `007.jpg`, `scene_7.png` all belong to line 7. Missing images are highlighted; the previous drawing simply stays on screen.
+3. **Style**: board, hand and hand size, drawing style, pen rhythm, drawing time, transitions, format, resolution. A live preview shows the finished look.
+4. **Sync**: *Whisper* (exact), *Import SRT* (use existing subtitle timing) or *Estimate* (quick draft). Then adjust any line in the timeline table, play it, or render a preview of just that line.
+5. **Export**: render the MP4 (High quality or Fast draft) and download it.
+
+Or press **Make video**: it syncs (if needed) and renders in one click.
+
+### Getting the best results
+
+- Clean line art on a plain white background draws most naturally. Transparent PNGs work too.
+- Busy photos still work, but are traced as a whole picture.
+- **Drawing time** controls how much of each line is spent drawing; the rest shows the finished picture. **Longest drawing** caps very long lines.
+- **Pen rhythm → Follow the voice** moves the pen while words are spoken and slows it in pauses. **Steady speed** draws evenly.
+- For Persian videos, set **Drawing order → Right → left** (Auto does this when the script is Persian).
+
+## Let Claude Code draw the images
+
+No image generator? Projects are plain folders, so an AI coding agent can draw
+the pictures as SVG line art, which is also the most natural-looking input
+for the pen.
+
+1. Create the project in the app and add the narration and script.
+2. Open this app's folder in [Claude Code](https://claude.com/claude-code) and ask:
+   > Draw the images for the project "my-video".
+3. Claude Code reads the script and writes `images/1.svg`, `images/2.svg`, … following
+   [`docs/svg-style-guide.md`](docs/svg-style-guide.md). It checks its own work with
+   `python -m swa lint-svg` and a contact sheet (`python -m swa sheet`).
+4. Back in the app: **Sync → Export**.
+
+You can mix sources freely: your own PNGs for some lines, SVGs for others.
+
+## Hands and boards
+
+- **Hands** (sidebar → Hands): upload a PNG of a hand holding a pen, marker or chalk, ideally with a transparent background and the arm running off the bottom edge. Click the pen tip, set the size. Upload as many as you like and pick one per project.
+- **Boards** (sidebar → Boards): upload any image as a custom board. Dark images automatically switch drawings to chalk colours.
+
+## Command line
+
+Everything in the app is also available from the terminal:
 
 ```bash
-python scripts/render_annotation_preview.py <图片路径> <标注路径> <预览图输出路径>
+python -m swa                          # start the app
+python -m swa new "The Spartan Way"    # create a project
+python -m swa check the-spartan-way    # what is missing?
+python -m swa align the-spartan-way    # sync with Whisper (--method srt --srt subs.srt | --method estimate)
+python -m swa render the-spartan-way --line 12 --draft   # quick preview of one line
+python -m swa render the-spartan-way   # full video → data/projects/the-spartan-way/output/
+python -m swa sheet the-spartan-way    # contact sheet of all drawings
+python -m swa lint-svg the-spartan-way # check SVG drawings
 ```
 
-打开 `assets/preview.html`，使用“打开文件夹”载入场景目录，即可编辑区域、顺序、时间与字幕关联。
+## Project folder
 
-渲染单幕：
+```
+data/projects/the-spartan-way/
+  project.json      name and settings
+  narration.mp3     your voice-over
+  script.txt        numbered lines
+  images/           1.png, 2.svg, ... (number = script line)
+  transcript.json   saved Whisper result (re-sync is instant)
+  timeline.json     start/end of every line (editable in the app)
+  output/           rendered videos
+```
+
+Set the `SWA_DATA` environment variable to keep projects somewhere else.
+
+## Troubleshooting
+
+| Problem | Fix |
+|---|---|
+| "FFmpeg not found" | Install FFmpeg and make sure `ffmpeg` works in a terminal, or set `FFMPEG` to the full path of `ffmpeg.exe`. |
+| "Whisper not found" | `pip install faster-whisper` in the same Python you start the app with, or use *Import SRT* / *Estimate*. |
+| Whisper is slow | Pick a smaller model (`base` or `small`) in the Sync tab. `medium` / `large-v3` are more accurate for Persian. |
+| A drawing starts too early or late | Sync tab → edit that line's start time → *Save times*. |
+| The pen starts at the wrong spot on my hand | Hands → *Pen tip* → click the exact tip. |
+| Port 7860 is busy | The app picks the next free port automatically. |
+
+## For developers
 
 ```bash
-<ENV_PY> scripts/render_stream_whiteboard.py <图片路径> <标注路径> <输出.mp4> assets/drawing-hand.png \
-  --ink-path grid --color-fill contour-wipe
+pip install -r requirements.txt pytest
+python -m pytest -q
 ```
 
-合并多幕：
+Code map and conventions: [`CLAUDE.md`](CLAUDE.md).
 
-```bash
-<ENV_PY> scripts/merge_scenes.py --inputs 幕1.mp4 幕2.mp4 幕3.mp4 --output final.mp4
-```
+## License
 
-## 质量检查
-
-- 首帧是干净的暖米黄纸张底色，没有提前露出的线条
-- `canvas` 与原图尺寸一致，所有区域都是画布内的整数像素坐标
-- `sequence`、`startMs` 与字幕的叙事顺序一致
-- 中段帧中，未开始区域和保护区不会提前出现
-- 笔尖贴近当前流式笔迹；线稿清晰时可选择 `--ink-path skeleton`
-- 每幕结束后至少停留 0.5 秒完整画面；多幕合并顺序与字幕分镜一致
-
-## 仓库内容
-
-```text
-srt-whiteboard-animation/
-├── SKILL.md                         # 完整工作流与约束
-├── assets/
-│   ├── drawing-hand.png              # 手部素材
-│   ├── preview.html                  # 本地编辑预览台
-├── examples/                         # README 案例素材
-├── scripts/
-│   ├── parse_srt.py                  # 字幕解析与分镜建议
-│   ├── render_annotation_preview.py  # 标注检查图
-│   ├── render_stream_whiteboard.py   # 流式笔迹 MP4 渲染器
-│   ├── merge_scenes.py               # 多幕合并
-│   └── prepare_env.py                # 依赖环境准备
-└── agents/openai.yaml                # Codex 元数据
-```
-
-## 贡献
-
-欢迎提交 Issue 或 Pull Request。任何涉及绘制逻辑的改动，都应使用真实的字幕、标注和成片检查遮罩保护、时序与最终画面。
-
-## 许可证
-
-本项目基于 MIT License 开源，详见 [LICENSE](LICENSE)。
-
-## 关于作者
-
-一个爱养鱼的老登 / AI Builder / 用 AI 团队打造一人公司。
-
-抖音、B站、公众号：江哥是老登啊
+MIT, see [LICENSE](LICENSE). Grew out of the original *srt-whiteboard-animation*
+skill by 江哥是老登啊.

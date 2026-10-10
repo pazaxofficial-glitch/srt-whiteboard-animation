@@ -3,10 +3,13 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+.pytest_cache/
 
-# 本地产物（成片体积大，不入库；banana 示例视频保留）
+# Your projects, hands and backgrounds (kept out of git)
+data/
+
+# Rendered videos
 *.mp4
-!examples/scene-01-monkey-mountain-banana-whiteboard.mp4
 
 # OS
 Thumbs.db

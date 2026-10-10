@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" width="1600" height="900">
+  <!-- Line 1: "Life, the Spartan way." — a Spartan helmet with its crest -->
+  <g fill="none" stroke="#222222" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+    <!-- crest (filled red later) -->
+    <path d="M610 300 C 640 170, 760 120, 880 130 C 960 138, 1010 170, 1040 215 C 990 200, 930 205, 890 230 C 850 205, 790 200, 740 225 C 700 245, 660 270, 610 300 Z" fill="#D9452B"/>
+    <path d="M660 270 C 700 215, 760 185, 830 180"/>
+    <path d="M720 240 C 760 205, 820 190, 880 195"/>
+    <!-- helmet dome -->
+    <path d="M560 470 C 560 330, 660 245, 800 245 C 940 245, 1040 330, 1040 470 L 1040 640 C 1040 680, 1010 700, 980 700 L 900 700 C 880 700, 870 685, 870 665 L 870 520 C 870 500, 850 485, 830 485 L 770 485 C 750 485, 730 500, 730 520 L 730 665 C 730 685, 720 700, 700 700 L 620 700 C 590 700, 560 680, 560 640 Z" fill="#E8B04A"/>
+    <!-- eye slot outline -->
+    <path d="M600 470 C 650 455, 700 455, 730 470"/>
+    <path d="M870 470 C 900 455, 950 455, 1000 470"/>
+    <!-- brow band -->
+    <path d="M575 420 C 700 390, 900 390, 1025 420"/>
+    <!-- cheek guard details -->
+    <path d="M610 560 C 640 590, 660 620, 665 660"/>
+    <path d="M990 560 C 960 590, 940 620, 935 660"/>
+    <!-- rivets -->
+    <circle cx="610" cy="430" r="8"/>
+    <circle cx="990" cy="430" r="8"/>
+    <!-- shine -->
+    <path d="M650 340 C 690 300, 740 280, 790 275" stroke-width="5"/>
+  </g>
+  <!-- ground shadow -->
+  <path d="M600 760 C 700 785, 900 785, 1000 760" fill="none" stroke="#222222" stroke-width="5" stroke-linecap="round"/>
+</svg>

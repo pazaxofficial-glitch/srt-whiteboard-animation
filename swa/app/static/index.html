@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en" dir="ltr" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Simple Whiteboard Animation</title>
+  <link rel="icon" href="/static/logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <a class="brand" href="#/projects">
+        <img src="/static/logo.svg" alt="" width="34" height="34">
+        <span><b>Simple</b> Whiteboard<br>Animation</span>
+      </a>
+      <nav id="nav"></nav>
+      <div class="sidebar-foot">
+        <div class="sys" id="sys"></div>
+        <div class="toggles">
+          <button class="chip-btn" id="langBtn" type="button"></button>
+          <button class="chip-btn icon" id="themeBtn" type="button" aria-label="Theme"></button>
+        </div>
+      </div>
+    </aside>
+    <main id="view" class="view"></main>
+  </div>
+  <div id="toasts" class="toasts"></div>
+  <div id="modal" class="modal" hidden></div>
+  <script src="/static/i18n.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

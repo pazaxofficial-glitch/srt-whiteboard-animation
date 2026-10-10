@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" width="1600" height="900">
+  <!-- Line 3: "They trained every single day, from sunrise to sunset." — sun over a mountain, a running figure -->
+  <g fill="none" stroke="#222222" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+    <!-- mountains -->
+    <path d="M150 700 L 520 300 L 760 560 L 940 380 L 1450 700 Z" fill="#9FC3E8"/>
+    <path d="M440 390 L 520 300 L 600 385 L 560 370 L 520 400 L 480 370 Z" fill="#FFFFFF"/>
+    <!-- sun -->
+    <circle cx="1180" cy="230" r="85" fill="#F2A23A"/>
+    <path d="M1180 105 L 1180 70"/>
+    <path d="M1180 355 L 1180 390"/>
+    <path d="M1055 230 L 1020 230"/>
+    <path d="M1305 230 L 1340 230"/>
+    <path d="M1092 142 L 1067 117"/>
+    <path d="M1268 318 L 1293 343"/>
+    <path d="M1268 142 L 1293 117"/>
+    <path d="M1092 318 L 1067 343"/>
+    <!-- ground -->
+    <path d="M100 700 C 500 720, 1100 690, 1500 705"/>
+    <!-- running figure -->
+    <circle cx="300" cy="545" r="26"/>
+    <path d="M300 572 L 285 640"/>
+    <path d="M285 640 L 320 690 L 345 690"/>
+    <path d="M285 640 L 255 680 L 225 675"/>
+    <path d="M296 590 L 335 615 L 360 595"/>
+    <path d="M296 590 L 260 610 L 240 640"/>
+    <!-- motion lines -->
+    <path d="M200 560 L 160 560"/>
+    <path d="M210 600 L 175 600"/>
+  </g>
+</svg>
